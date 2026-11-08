@@ -42,6 +42,67 @@ class SourceFidelityComparisonTest(unittest.TestCase):
         self.assertEqual(witness.compare_sources(direct, changed, "AddSub_is_add"),
                          ("REVIEW_REQUIRED", ["state_send[0]"]))
 
+    def test_nested_emitted_equality_alias_is_source_preserving(self):
+        nested = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                              '  (w.v201 - (w.v1 + (4 : F))) = 0 ∧\n'
+                              '  (w.v101 - w.v201) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, nested, "AddSub_is_add"),
+                         ("UNCHANGED", []))
+
+    def test_nested_equality_rebind_is_not_hidden_by_alias(self):
+        nested = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                              '  (w.v201 - (w.v1 + (6 : F))) = 0 ∧\n'
+                              '  (w.v101 - w.v201) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, nested, "AddSub_is_add"),
+                         ("REVIEW_REQUIRED", ["state_send[1]"]))
+
+    def test_nested_equality_missing_intermediate_is_unknown(self):
+        missing = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                               '  (w.v101 - w.v201) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, missing, "AddSub_is_add"),
+                         ("UNKNOWN", ["<unqualified interface>"]))
+
+    def test_nested_equality_cycle_is_unknown(self):
+        cyclic = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                              '  (w.v101 - w.v201) = 0 ∧\n'
+                              '  (w.v201 - w.v101) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, cyclic, "AddSub_is_add"),
+                         ("UNKNOWN", ["<unqualified interface>"]))
+
+    def test_witnessed_multiplicity_one_is_a_harmless_reification(self):
+        gated = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                             '  (w.v201 - (1 : F)) = 0 ∧\n'
+                             '  (w.v101 - ((w.v1 + (4 : F)) * w.v201)) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, gated, "AddSub_is_add"),
+                         ("UNCHANGED", []))
+
+    def test_witnessed_multiplicity_two_remains_a_real_change(self):
+        gated = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                             '  (w.v201 - (2 : F)) = 0 ∧\n'
+                             '  (w.v101 - ((w.v1 + (4 : F)) * w.v201)) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, gated, "AddSub_is_add"),
+                         ("REVIEW_REQUIRED", ["state_send[1]"]))
+
+    def test_multiplicative_identity_without_emitted_equality_is_unknown(self):
+        unbound = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                               '  (w.v101 - ((w.v1 + (4 : F)) * w.v201)) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, unbound, "AddSub_is_add"),
+                         ("UNKNOWN", ["<unqualified interface>"]))
+
+    def test_multiplicative_identity_cannot_hide_inner_semantic_change(self):
+        changed = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                               '  (w.v201 - (1 : F)) = 0 ∧\n'
+                               '  (w.v101 - ((w.v1 + (6 : F)) * w.v201)) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, changed, "AddSub_is_add"),
+                         ("REVIEW_REQUIRED", ["state_send[1]"]))
+
+    def test_unbalanced_emitted_intermediate_is_unknown(self):
+        malformed = BASE.replace('  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                                 '  (w.v201 - (w.v1 + (4 : F))) + (3 : F) = 0 ∧\n'
+                                 '  (w.v101 - w.v201) = 0 ∧\n')
+        self.assertEqual(witness.compare_sources(BASE, malformed, "AddSub_is_add"),
+                         ("UNKNOWN", ["<unqualified interface>"]))
+
     def test_benign_field_insertion_does_not_trigger_review(self):
         shifted = BASE.replace("v1", "v2")
         self.assertEqual(witness.compare_sources(BASE, shifted, "AddSub_is_add"), ("UNCHANGED", []))
