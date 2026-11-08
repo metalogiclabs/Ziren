@@ -354,11 +354,18 @@ fn main() {
             // names (and all Picus/solver values) stay unchanged. An unrelated field inserted
             // earlier in the main AIR row must not rename the later field's semantic identity.
             let mut lean_names = names.clone();
-            let mut occupied = BTreeMap::<usize, &str>::new();
-            for (field, &(start, end)) in &chip.picus_info().name_to_colrange {
-                assert!(start < end && end <= chip.air.width(), "invalid source field range");
+            let mut occupied = BTreeMap::<usize, String>::new();
+            let source_info = chip.picus_info();
+            for (field, &(start, end)) in &source_info.name_to_colrange {
+                assert!(
+                    start < end && end <= chip.air.width(),
+                    "invalid source field range"
+                );
                 for (offset, col) in (start..end).enumerate() {
-                    assert!(occupied.insert(col, field).is_none(), "overlapping source field ranges");
+                    assert!(
+                        occupied.insert(col, field.clone()).is_none(),
+                        "overlapping source field ranges"
+                    );
                     lean_names.insert(col, format!("{field}[{offset}]"));
                 }
             }
