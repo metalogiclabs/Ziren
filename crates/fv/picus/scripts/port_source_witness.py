@@ -23,6 +23,44 @@ class Witness:
     expression: str
 
 
+def enclosing_parens(expression: str) -> bool:
+    """Require a single balanced outer pair; a prefix/suffix check is unsafe."""
+    if not expression.startswith("(") or not expression.endswith(")"):
+        return False
+    depth = 0
+    for i, char in enumerate(expression):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth < 0 or depth == 0 and i != len(expression) - 1:
+                return False
+    return depth == 0
+
+
+def discard_proven_multiplicative_one(expression: str) -> str:
+    """Normalize only a *top-level* multiplication by the field's literal one."""
+    while enclosing_parens(expression):
+        interior = expression[1:-1]
+        depth = 0
+        split = None
+        for i, char in enumerate(interior):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth < 0:
+                    return expression
+            elif char == "*" and depth == 0:
+                if split is not None:
+                    return expression
+                split = i
+        if depth != 0 or split is None or interior[split + 1:] != "(1:F)":
+            return expression
+        expression = interior[:split]
+    return expression
+
+
 def module_body(source: str, module: str) -> str:
     start = f"\nnamespace {module}\n"
     end = f"\nend {module}"
@@ -63,15 +101,30 @@ def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Wi
     for var_id, rhs in matches:
         rhs_by_id.setdefault(var_id, []).append(rhs)
 
-    def canonical(rhs: str) -> str:
+    expansions = [0]
+
+    def canonical(rhs: str, stack: frozenset[str] = frozenset()) -> str:
         def replace_var(match: re.Match[str]) -> str:
             var_id = match.group(1)
-            if var_id not in names_by_id:
-                raise Unwitnessed(f"unmapped variable in binding expression: v{var_id}")
-            return f"@{names_by_id[var_id]}"
+            if var_id in names_by_id:
+                return f"@{names_by_id[var_id]}"
+            candidates = rhs_by_id.get(var_id, [])
+            if len(candidates) != 1 or var_id in stack:
+                raise Unwitnessed(f"missing, ambiguous or cyclic intermediate equality: v{var_id}")
+            expansions[0] += 1
+            if expansions[0] > 4096:
+                raise Unwitnessed("intermediate equality expansion budget exceeded")
+            candidate = candidates[0].strip()
+            # Lean's emitted arithmetic expressions are parenthesized. Refuse
+            # an unbracketed composite, whose textual substitution could
+            # silently change operator precedence.
+            if not (enclosing_parens(candidate)
+                    or re.fullmatch(r'w\.v\d+', candidate)):
+                raise Unwitnessed(f"unparenthesized intermediate: v{var_id}")
+            return canonical(candidate, stack | {var_id})
 
         normalized = re.sub(r'w\.v(\d+)', replace_var, rhs)
-        return re.sub(r'\s+', '', normalized)
+        return discard_proven_multiplicative_one(re.sub(r'\s+', '', normalized))
 
     result = {}
     for label, port in zip(labels, ports):
