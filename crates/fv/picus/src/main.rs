@@ -146,10 +146,12 @@ where
     top.assume_deterministic.clear();
 
     let mut one_hot_sum = PicusExpr::Const(0);
-    for (selector_col, _) in &picus_info.selector_indices {
+    let mut output_origins = Vec::new();
+    for (selector_col, selector_name) in &picus_info.selector_indices {
         let selector = PicusExpr::Var(*selector_col);
         one_hot_sum += selector.clone();
         top.outputs.push(selector.clone());
+        output_origins.push(format!("selector.{selector_name}"));
         top.postconditions.push(PicusConstraint::new_bit(selector.clone()));
         if assume_selectors_deterministic {
             top.assume_deterministic.push(selector);
@@ -161,6 +163,7 @@ where
         } else if let Some(is_real) = picus_info.is_real_index {
             let is_real = PicusExpr::Var(is_real);
             top.outputs.push(is_real.clone());
+            output_origins.push("column.is_real".to_string());
             top.postconditions.push(PicusConstraint::new_bit(is_real.clone()));
             top.postconditions.push(PicusConstraint::new_equality(one_hot_sum, is_real));
         } else {
@@ -169,6 +172,12 @@ where
     } else {
         top.postconditions.push(PicusConstraint::new_lt(one_hot_sum, 2.into()));
     }
+    // `extract_module` saved origins before the top interface was replaced.
+    // Keep the emitted provenance in exact lockstep with the actual ports.
+    zkm_picus::picus_builder::PORT_ORIGINS
+        .lock()
+        .unwrap()
+        .insert(top.name.clone(), (Vec::new(), output_origins));
     Some((top, aux))
 }
 
