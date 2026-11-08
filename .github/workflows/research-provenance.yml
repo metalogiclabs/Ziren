@@ -1,0 +1,41 @@
+name: Fork-only provenance Rust check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-provenance-check
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Rustfmt (pinned research commit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  test:
+    name: Port-origin regression (pinned research commit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+      - run: cargo test -p zkm-picus port_origin_tests --lib
