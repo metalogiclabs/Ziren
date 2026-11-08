@@ -2,9 +2,9 @@
 """Bounded, fail-closed source-equality audit of authentic generated Ziren Lean.
 
 This is a research diagnostic, not a Lean proof or a production pinning guard.
-It relies on the current emitted equality shape and on the generator's witness
-field annotations as temporary source-name proxies. Column-insertion stability
-is NOT established by this experiment.
+It relies on the current emitted equality shape and the generator's field-relative
+witness annotations. Source insertion invariance is established only for the
+bounded AddSub experiment, not for arbitrary chips or expression trees.
 """
 
 import argparse
@@ -47,8 +47,8 @@ def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Wi
     if any(not re.fullmatch(r'w\.v\d+', p) for p in ports):
         raise Unwitnessed("non-variable output expression")
 
-    # A temporary naming proxy from the exact generator's W declarations.
-    # It is not yet the source-qualified name_to_colrange mapping.
+    # Field-relative annotations emitted by the exact generator from
+    # PicusInfo.name_to_colrange. Treat ambiguous annotations as UNKNOWN.
     names = re.findall(r'/-- `([^`]+)` -/\s*\n\s*v(\d+) : F', body)
     if (len({name for name, _ in names}) != len(names)
             or len({var_id for _, var_id in names}) != len(names)):
@@ -81,7 +81,50 @@ def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Wi
             result[label] = Witness(label, canonical(matches_for_port[0]))
         elif len(matches_for_port) > 1:
             raise Unwitnessed(f"multiple candidate equalities for {label}")
+        elif var_id in names_by_id:
+            # A port that directly exports an original AIR column needs no
+            # introduced equality. Its stable field-relative name is the
+            # source identity; a derived unannotated free variable is UNKNOWN.
+            result[label] = Witness(label, f"@{names_by_id[var_id]}")
     return result
+
+
+def compare_sources(old_source: str, new_source: str,
+                    module: str = "AddSub_is_add") -> tuple[str, list[str]]:
+    """Classify two generated source interfaces; missing binding evidence is UNKNOWN.
+
+    This is deliberately a bounded source-equality comparator, not a proof
+    checker and not an automatic replacement for the v1 manifest guard.
+    """
+    def qualified(source: str) -> tuple[list[str], dict[str, Witness]]:
+        body = module_body(source, module)
+        declaration = re.search(r'^def output_origins : List String := \[(.*)\]$',
+                                body, re.M)
+        if declaration is None:
+            raise Unwitnessed("missing output provenance")
+        labels = re.findall(r'"([^"\n]+)"', declaration.group(1))
+        bindings = source_witnesses(source, module)
+        if len(set(labels)) != len(labels):
+            raise Unwitnessed("duplicate port provenance")
+        return labels, bindings
+
+    try:
+        old_labels, old = qualified(old_source)
+        new_labels, new = qualified(new_source)
+    except Unwitnessed:
+        return "UNKNOWN", ["<unqualified interface>"]
+
+    lost_or_gained = set(old_labels) ^ set(new_labels)
+    if lost_or_gained:
+        return "REVIEW_REQUIRED", sorted(lost_or_gained)
+    unresolved = {label for label in old_labels if label not in old or label not in new}
+    changed = {label for label in old_labels if label in old and label in new
+               and old[label].expression != new[label].expression}
+    if changed:
+        return "REVIEW_REQUIRED", sorted(changed | unresolved)
+    if unresolved:
+        return "UNKNOWN", sorted(unresolved)
+    return "UNCHANGED", []
 
 
 def _replace_rhs(source: str, port_id: str, replacement: str) -> str:
