@@ -29,6 +29,17 @@ jobs:
           cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-default
           cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r4 --reify-threshold 4
           cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r2 --reify-threshold 2
+          for mutation in \
+            insert:3d3908185772c829cca76189c152ea0d36e96e2a \
+            rebind:b27a54b029d73bc00ab8bf351f890bcf4325a3fe
+          do
+            kind="${mutation%%:*}"
+            pinned="${mutation#*:}"
+            git switch --detach "$pinned"
+            test "$(git rev-parse HEAD)" = "$pinned"
+            cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir "generated-${kind}-r2" --reify-threshold 2
+            echo "AUTHENTIC_MUTATED_REIFICATION: $kind $pinned"
+          done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
           git switch --detach baf045e415c6a1a84f487191b4e66461ab0ef2bb
@@ -43,7 +54,7 @@ jobs:
           sys.modules[spec.name] = w
           spec.loader.exec_module(w)
           src = {k:Path(f"generated-{k}/ZirenDet/Chips/AddSub.lean").read_text()
-                 for k in ("default", "r4", "r2")}
+                 for k in ("default", "r4", "r2", "insert-r2", "rebind-r2")}
           for specialization in ("AddSub_is_add","AddSub_is_sub"):
               base = w.source_witnesses(src["default"],specialization)
               print(f"BASE: {specialization} {len(base)} witnessed outputs")
@@ -58,7 +69,15 @@ jobs:
                           print(f"  {port}: {seen.get(port)}")
                   except w.Unwitnessed as error:
                       print(f"REIFY_UNKNOWN: module={specialization} threshold={k} {error}")
-          print("BOUNDARY: bounded source witness equality, not Lean proof, source-vs-requirement audit, or production pinning")
+              for k, expected in (
+                  ("insert-r2", ("UNCHANGED", [])),
+                  ("rebind-r2", ("REVIEW_REQUIRED", ["state_send[3]"])),
+              ):
+                  seen = w.source_witnesses(src[k], specialization)
+                  verdict = w.compare_sources(src["default"], src[k], specialization)
+                  print(f"COMPOSED_DIAGNOSTIC: module={specialization} mutation={k} witnessed={len(seen)} verdict={verdict}")
+                  assert len(seen) == 19 and verdict == expected, (specialization, k, len(seen), verdict)
+          print("BOUNDARY: combined actual Rust AIR mutation and reification; generated source only, not Lean proof or production pinning")
           PY
       - name: Preserve actual generated evidence at each threshold
         if: always()
@@ -69,4 +88,6 @@ jobs:
             generated-default/ZirenDet/Chips/AddSub.lean
             generated-r4/ZirenDet/Chips/AddSub.lean
             generated-r2/ZirenDet/Chips/AddSub.lean
+            generated-insert-r2/ZirenDet/Chips/AddSub.lean
+            generated-rebind-r2/ZirenDet/Chips/AddSub.lean
           if-no-files-found: warn
