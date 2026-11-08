@@ -42,7 +42,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach baf045e415c6a1a84f487191b4e66461ab0ef2bb
+          git switch --detach c883ca4686cb40aaf7d3940a7fe1112f41e3170c
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
@@ -77,7 +77,25 @@ jobs:
                   verdict = w.compare_sources(src["default"], src[k], specialization)
                   print(f"COMPOSED_DIAGNOSTIC: module={specialization} mutation={k} witnessed={len(seen)} verdict={verdict}")
                   assert len(seen) == 19 and verdict == expected, (specialization, k, len(seen), verdict)
-          print("BOUNDARY: combined actual Rust AIR mutation and reification; generated source only, not Lean proof or production pinning")
+          # Strong negative: preserve a true textual equality in an unrelated
+          # Lean definition, while deleting it from active constraints_4.
+          # The old module-wide grep would falsely classify this as unchanged.
+          honest = src["r2"]
+          equality = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\\n"
+          end_marker = "\\nend AddSub_is_add"
+          assert honest.count(equality) == 1 and honest.count(end_marker) == 1
+          disconnected = honest.replace(equality, "", 1)
+          disconnected = disconnected.replace(
+              end_marker,
+              "\\ndef disconnected (w : W) : Prop :=\\n"
+              "  (w.v477 - (w.v443 * w.v444)) = 0\\n" + end_marker,
+              1,
+          )
+          lost = w.compare_sources(honest, disconnected, "AddSub_is_add")
+          print(f"DISCONNECTED_BINDER_DIAGNOSTIC: {lost}")
+          assert lost == ("UNKNOWN", ["state_send[3]"]), lost
+          Path("generated-disconnected-lean").write_text(disconnected)
+          print("BOUNDARY: source-level active-constraint witness only; not Lean proof, rel/theorem check, or production pinning")
           PY
       - name: Preserve actual generated evidence at each threshold
         if: always()
@@ -90,4 +108,5 @@ jobs:
             generated-r2/ZirenDet/Chips/AddSub.lean
             generated-insert-r2/ZirenDet/Chips/AddSub.lean
             generated-rebind-r2/ZirenDet/Chips/AddSub.lean
+            generated-disconnected-lean
           if-no-files-found: warn
