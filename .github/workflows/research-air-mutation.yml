@@ -1,0 +1,102 @@
+name: Fork-only AddSub AIR source mutation replay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-air-mutation-replay
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Baseline vs real field insertion vs real derived-port rebind
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: a197403d766288502db5edd5eda02466e94db4a4
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+      - name: Generate Lean for each pinned authentic Rust AIR source
+        run: |
+          set -eu
+          mkdir -p generated-base generated-insert generated-rebind
+          for item in \
+            base:a197403d766288502db5edd5eda02466e94db4a4 \
+            insert:3d3908185772c829cca76189c152ea0d36e96e2a \
+            rebind:b27a54b029d73bc00ab8bf351f890bcf4325a3fe
+          do
+            label="${item%%:*}"
+            sha="${item#*:}"
+            git switch --detach "$sha"
+            test "$(git rev-parse HEAD)" = "$sha"
+            cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir "generated-$label"
+            test -s "generated-$label/ZirenDet/Chips/AddSub.lean"
+            echo "AUTHENTIC_AIR_GENERATED: $label $sha"
+          done
+      - name: Compare source-qualified derived-port meaning
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          from pathlib import Path
+
+          location = Path("crates/fv/picus/scripts/port_source_witness.py")
+          spec = importlib.util.spec_from_file_location("witness", location)
+          module = importlib.util.module_from_spec(spec)
+          import sys
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          evidence = {}
+          for kind in ("base", "insert", "rebind"):
+              lean = Path(f"generated-{kind}/ZirenDet/Chips/AddSub.lean").read_bytes()
+              source = lean.decode("utf-8")
+              evidence[kind] = {
+                  "sha256": hashlib.sha256(lean).hexdigest(),
+                  "modules": {}
+              }
+              for specialization in ("AddSub_is_add", "AddSub_is_sub"):
+                  data = module.source_witnesses(source, specialization)
+                  for port in ("state_send[1]", "state_send[3]"):
+                      assert port in data, (kind, specialization, port, data)
+                  evidence[kind]["modules"][specialization] = {
+                      key: value.expression for key, value in sorted(data.items())
+                  }
+
+          base = evidence["base"]["modules"]
+          inserted = evidence["insert"]["modules"]
+          rebound = evidence["rebind"]["modules"]
+
+          assert inserted == base, ("BENIGN_INSERTION_CHANGED_SOURCE", base, inserted)
+          for specialization in base:
+              assert rebound[specialization]["state_send[1]"] == base[specialization]["state_send[1]"], ("UNRELATED_PORT_CHANGED", specialization)
+              assert rebound[specialization]["state_send[3]"] != base[specialization]["state_send[3]"], ("REAL_REBIND_NOT_DETECTED", specialization)
+              assert "@next_pc[0]+5" in rebound[specialization]["state_send[3]"], ("UNEXPECTED_REBIND_EXPRESSION", specialization)
+              assert "@next_pc[0]+4" in base[specialization]["state_send[3]"], ("UNEXPECTED_BASE_EXPRESSION", specialization)
+
+          Path("source-mutation-results.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          print("ACTUAL_AIR_INSERTION_INVARIANT: source witnesses unchanged for both specializations")
+          print("ACTUAL_AIR_REBIND_DETECTED: state_send[3] changed from +4 to +5 for both specializations")
+          print(json.dumps(evidence, indent=2, sort_keys=True))
+          print("BOUNDARY: generated Lean textual equality witness only; solver, proofs, ISA, end-to-end pinning not established")
+          PY
+      - name: Preserve three generated Lean modules and comparison receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zirensource-air-mutation-real
+          path: |
+            generated-base/ZirenDet/Chips/AddSub.lean
+            generated-insert/ZirenDet/Chips/AddSub.lean
+            generated-rebind/ZirenDet/Chips/AddSub.lean
+            source-mutation-results.json
+          if-no-files-found: warn
