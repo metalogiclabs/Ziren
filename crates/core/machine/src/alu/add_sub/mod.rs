@@ -238,7 +238,7 @@ where
                 + local.is_sub * Opcode::SUB.as_field::<AB::F>(),
             local.pc.into(),
             local.next_pc.into(),
-            local.next_pc + AB::Expr::from_u32(4),
+            local.next_pc + AB::Expr::from_u32(5),
             local.next_pc.into(),
             AB::Expr::ZERO,
             is_real,
