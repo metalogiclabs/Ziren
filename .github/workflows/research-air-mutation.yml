@@ -80,8 +80,8 @@ jobs:
           for specialization in base:
               assert rebound[specialization]["state_send[1]"] == base[specialization]["state_send[1]"], ("UNRELATED_PORT_CHANGED", specialization)
               assert rebound[specialization]["state_send[3]"] != base[specialization]["state_send[3]"], ("REAL_REBIND_NOT_DETECTED", specialization)
-              assert "@next_pc[0]+5" in rebound[specialization]["state_send[3]"], ("UNEXPECTED_REBIND_EXPRESSION", specialization)
-              assert "@next_pc[0]+4" in base[specialization]["state_send[3]"], ("UNEXPECTED_BASE_EXPRESSION", specialization)
+              assert "@next_pc[0]+(5:F)" in rebound[specialization]["state_send[3]"], ("UNEXPECTED_REBIND_EXPRESSION", specialization)
+              assert "@next_pc[0]+(4:F)" in base[specialization]["state_send[3]"], ("UNEXPECTED_BASE_EXPRESSION", specialization)
 
           Path("source-mutation-results.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
           print("ACTUAL_AIR_INSERTION_INVARIANT: source witnesses unchanged for both specializations")
