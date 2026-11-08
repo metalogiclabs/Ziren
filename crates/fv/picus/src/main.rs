@@ -350,7 +350,19 @@ fn main() {
             println!("  wrote {}", path.display());
         }
         if matches!(args.format, Format::Lean | Format::Both) {
-            let path = lean::write_chip(&program, &chip.name(), &args.lean_out_dir, &names)
+            // Expose stable field-relative source names in Lean witness comments. The ordinary
+            // names (and all Picus/solver values) stay unchanged. An unrelated field inserted
+            // earlier in the main AIR row must not rename the later field's semantic identity.
+            let mut lean_names = names.clone();
+            let mut occupied = BTreeMap::<usize, &str>::new();
+            for (field, &(start, end)) in &chip.picus_info().name_to_colrange {
+                assert!(start < end && end <= chip.air.width(), "invalid source field range");
+                for (offset, col) in (start..end).enumerate() {
+                    assert!(occupied.insert(col, field).is_none(), "overlapping source field ranges");
+                    lean_names.insert(col, format!("{field}[{offset}]"));
+                }
+            }
+            let path = lean::write_chip(&program, &chip.name(), &args.lean_out_dir, &lean_names)
                 .unwrap_or_else(|e| panic!("write lean for {}: {e}", chip.name()));
             println!("  wrote {}", path.display());
         }
