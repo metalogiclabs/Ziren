@@ -103,6 +103,32 @@ class SourceFidelityComparisonTest(unittest.TestCase):
         self.assertEqual(witness.compare_sources(BASE, malformed, "AddSub_is_add"),
                          ("UNKNOWN", ["<unqualified interface>"]))
 
+    def test_inactive_equality_cannot_witness_freed_output(self):
+        freed = BASE.replace('def constraints (w : W) : Prop :=\n'
+                             '  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n',
+                             'def unused (w : W) : Prop :=\n'
+                             '  (w.v101 - (w.v1 + (4 : F))) = 0\n'
+                             'def constraints (w : W) : Prop :=\n')
+        self.assertEqual(witness.compare_sources(BASE, freed, "AddSub_is_add"),
+                         ("UNKNOWN", ["state_send[1]"]))
+
+    def test_numbered_constraint_fan_in_is_preserved(self):
+        grouped = BASE.replace('def constraints (w : W) : Prop :=\n'
+                               '  (w.v101 - (w.v1 + (4 : F))) = 0 ∧\n'
+                               '  (w.v102 - (w.v1 + (5 : F))) = 0\n',
+                               'def constraints_0 (w : W) : Prop :=\n'
+                               '  (w.v101 - (w.v1 + (4 : F))) = 0\n'
+                               'def constraints_1 (w : W) : Prop :=\n'
+                               '  (w.v102 - (w.v1 + (5 : F))) = 0\n'
+                               'def constraints (w : W) : Prop :=\n'
+                               '  constraints_0 w ∧\n'
+                               '  constraints_1 w\n')
+        self.assertEqual(witness.compare_sources(BASE, grouped, "AddSub_is_add"),
+                         ("UNCHANGED", []))
+        disconnected = grouped.replace('  constraints_0 w ∧\n', '')
+        self.assertEqual(witness.compare_sources(BASE, disconnected, "AddSub_is_add"),
+                         ("UNKNOWN", ["state_send[1]"]))
+
     def test_benign_field_insertion_does_not_trigger_review(self):
         shifted = BASE.replace("v1", "v2")
         self.assertEqual(witness.compare_sources(BASE, shifted, "AddSub_is_add"), ("UNCHANGED", []))
