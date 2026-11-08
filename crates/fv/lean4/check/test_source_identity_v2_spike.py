@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from source_identity_v2_spike import classify, signature
+from source_identity_v2_spike import classify, signature, stable_names_from_ranges
 
 
 def var(n):
@@ -27,6 +27,25 @@ def const(n):
 
 
 class SourceIdentitySpikeTest(unittest.TestCase):
+    def test_field_relative_names_survive_main_column_insertion(self):
+        # PicusInfo.col_to_name uses absolute suffixes (public_0 -> public_1),
+        # whereas name_to_colrange can recover source field + local offset.
+        old = stable_names_from_ranges({"public": (0, 1)})
+        new = stable_names_from_ranges({"unused": (0, 1), "public": (1, 2)})
+        self.assertEqual(old, {0: "public[0]"})
+        self.assertEqual(new, {0: "unused[0]", 1: "public[0]"})
+        self.assertEqual(signature(var(0), old, {}), signature(var(1), new, {}))
+
+    def test_overlapping_source_field_ranges_are_unqualified(self):
+        self.assertIsNone(stable_names_from_ranges({"state": (0, 2), "other": (1, 3)}))
+
+    def test_missing_source_field_map_is_unknown_instead_of_crashing(self):
+        self.assertIsNone(stable_names_from_ranges(None))
+        self.assertIsNone(signature(var(0), None, {}))
+        status, affected = classify([("send[0]", var(0))], [("send[0]", var(1))],
+                                    None, {}, {1: "public[0]"}, {})
+        self.assertEqual((status, affected), ("UNKNOWN", ["send[0]"]))
+
     def test_expands_reified_temporaries_with_stable_names(self):
         # The first extraction calls the temporary v101; the second v203.
         a = signature(var(101), {0: "public_0"}, {101: add(var(0), const(4))})
