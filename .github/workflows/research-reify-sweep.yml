@@ -1,0 +1,69 @@
+name: Fork-only nested reification evidence sweep
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-reify-evidence-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: a197403d766288502db5edd5eda02466e94db4a4
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+      - name: Generate genuine AddSub lowerer reification variants
+        run: |
+          set -eu
+          cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-default
+          cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r4 --reify-threshold 4
+          cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r2 --reify-threshold 2
+      - name: Diagnose source signature survival without promoting unknowns
+        run: |
+          git switch --detach 4ba45ffcd2fb1bd82df965b7b627b54a4f797801
+          python3 - <<'PY'
+          import importlib.util
+          import sys
+          from pathlib import Path
+          p = Path("crates/fv/picus/scripts/port_source_witness.py")
+          spec = importlib.util.spec_from_file_location("sourcev2", p)
+          w = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = w
+          spec.loader.exec_module(w)
+          src = {k:Path(f"generated-{k}/ZirenDet/Chips/AddSub.lean").read_text()
+                 for k in ("default", "r4", "r2")}
+          for specialization in ("AddSub_is_add","AddSub_is_sub"):
+              base = w.source_witnesses(src["default"],specialization)
+              print(f"BASE: {specialization} {len(base)} witnessed outputs")
+              for k in ("r4","r2"):
+                  try:
+                      seen = w.source_witnesses(src[k],specialization)
+                      verdict = w.compare_sources(src["default"],src[k],specialization)
+                      print(f"REIFY_DIAGNOSTIC: module={specialization} threshold={k} witnessed={len(seen)} verdict={verdict}")
+                      for port in ("state_send[1]","state_send[3]"):
+                          print(f"  {port}: {seen.get(port)}")
+                  except w.Unwitnessed as error:
+                      print(f"REIFY_UNKNOWN: module={specialization} threshold={k} {error}")
+          print("BOUNDARY: research-only generator threshold intervention; UNKNOWN is not equivalence or defect")
+          PY
+      - name: Preserve actual generated evidence at each threshold
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zirensource-reify-threshold-sweep
+          path: |
+            generated-default/ZirenDet/Chips/AddSub.lean
+            generated-r4/ZirenDet/Chips/AddSub.lean
+            generated-r2/ZirenDet/Chips/AddSub.lean
+          if-no-files-found: warn
