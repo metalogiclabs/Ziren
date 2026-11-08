@@ -31,7 +31,8 @@ jobs:
           cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r2 --reify-threshold 2
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach 4ba45ffcd2fb1bd82df965b7b627b54a4f797801
+          git switch --detach baf045e415c6a1a84f487191b4e66461ab0ef2bb
+          python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
           import sys
@@ -46,16 +47,18 @@ jobs:
           for specialization in ("AddSub_is_add","AddSub_is_sub"):
               base = w.source_witnesses(src["default"],specialization)
               print(f"BASE: {specialization} {len(base)} witnessed outputs")
+              assert len(base) == 19, f"baseline output set changed: {specialization}"
               for k in ("r4","r2"):
                   try:
                       seen = w.source_witnesses(src[k],specialization)
                       verdict = w.compare_sources(src["default"],src[k],specialization)
                       print(f"REIFY_DIAGNOSTIC: module={specialization} threshold={k} witnessed={len(seen)} verdict={verdict}")
+                      assert len(seen) == 19 and verdict == ("UNCHANGED", []), (specialization, k, len(seen), verdict)
                       for port in ("state_send[1]","state_send[3]"):
                           print(f"  {port}: {seen.get(port)}")
                   except w.Unwitnessed as error:
                       print(f"REIFY_UNKNOWN: module={specialization} threshold={k} {error}")
-          print("BOUNDARY: research-only generator threshold intervention; UNKNOWN is not equivalence or defect")
+          print("BOUNDARY: bounded source witness equality, not Lean proof, source-vs-requirement audit, or production pinning")
           PY
       - name: Preserve actual generated evidence at each threshold
         if: always()
