@@ -49,10 +49,11 @@ def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Wi
 
     # A temporary naming proxy from the exact generator's W declarations.
     # It is not yet the source-qualified name_to_colrange mapping.
-    names = dict(re.findall(r'/-- `([^`]+)` -/\s*\n\s*v(\d+) : F', body))
-    names_by_id = {k: v for v, k in names.items()}
-    if len(names_by_id) != len(names):
-        raise Unwitnessed("ambiguous source field annotations")
+    names = re.findall(r'/-- `([^`]+)` -/\s*\n\s*v(\d+) : F', body)
+    if (len({name for name, _ in names}) != len(names)
+            or len({var_id for _, var_id in names}) != len(names)):
+        raise Unwitnessed("duplicate source field name or variable annotation")
+    names_by_id = {var_id: name for name, var_id in names}
 
     # Parse only direct equality binders emitted in the current Lean format:
     #   (w.v306 - <rhs>) = 0
@@ -119,6 +120,17 @@ def selftest(source: str) -> dict[str, str]:
     if missing == source or a in source_witnesses(missing):
         raise AssertionError("missing equality was silently accepted")
 
+    # Source-name collisions are not a license to equate distinct variables.
+    duplicated_name = source.replace("/-- `frame_7` -/", "/-- `frame_8` -/", 1)
+    if duplicated_name == source:
+        raise AssertionError("authentic frame annotation changed: requalify experiment")
+    try:
+        source_witnesses(duplicated_name)
+    except Unwitnessed:
+        pass
+    else:
+        raise AssertionError("duplicate source annotation was silently accepted")
+
     return {a: baseline[a].expression, b: baseline[b].expression}
 
 
@@ -138,7 +150,7 @@ def main() -> int:
     for origin, expression in sorted(witnesses.items()):
         print(f"SOURCE_EQ_WITNESSED: {origin} <- {expression}")
     if args.selftest:
-        print("SOURCE_EQ_CONTROLS_OK: source rebind detected; fresh alpha rename retained; missing equality UNKNOWN")
+        print("SOURCE_EQ_CONTROLS_OK: source rebind detected; fresh alpha rename retained; missing equality and duplicate names UNKNOWN")
         print("BOUNDARY: authentic Lean output + synthetic mutations; not column-insertion or AIR semantics proof")
     return 0
 
