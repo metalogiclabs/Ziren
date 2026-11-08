@@ -357,10 +357,7 @@ fn main() {
             let mut occupied = BTreeMap::<usize, String>::new();
             let source_info = chip.picus_info();
             for (field, &(start, end)) in &source_info.name_to_colrange {
-                assert!(
-                    start < end && end <= chip.air.width(),
-                    "invalid source field range"
-                );
+                assert!(start < end && end <= chip.air.width(), "invalid source field range");
                 for (offset, col) in (start..end).enumerate() {
                     assert!(
                         occupied.insert(col, field.clone()).is_none(),
