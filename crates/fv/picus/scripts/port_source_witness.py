@@ -72,6 +72,35 @@ def module_body(source: str, module: str) -> str:
     return body.split(end, 1)[0]
 
 
+def active_constraint_text(body: str) -> str:
+    """Read equalities only from the emitted active constraints definition(s)."""
+    blocks: dict[str, str] = {}
+    pattern = r'(?m)^def (constraints(?:_\d+)?) \(w : W\) : Prop :=\n((?:[ \t]+[^\n]*(?:\n|$))+)'
+    for match in re.finditer(pattern, body):
+        key, value = match.groups()
+        if key in blocks:
+            raise Unwitnessed(f"duplicate constraint definition: {key}")
+        if '/-' in value or '--' in value:
+            raise Unwitnessed("comments inside constraint definitions are not qualified")
+        blocks[key] = value
+    if "constraints" not in blocks:
+        raise Unwitnessed("missing active constraints definition")
+
+    master = blocks["constraints"].strip()
+    if re.search(r'\bconstraints_\d+\b', master):
+        used = [x.strip() for x in master.split('∧')]
+        if (len(used) != len(set(used)) or
+                any(not re.fullmatch(r'constraints_\d+ w', x) for x in used)):
+            raise Unwitnessed("ambiguous active constraints fan-in")
+        names = [x.removesuffix(' w') for x in used]
+        if any(name not in blocks for name in names):
+            raise Unwitnessed("referenced constraints block missing")
+        return '\n'.join(blocks[name] for name in names)
+    # The small synthetic controls use a direct conjunction. The authentic
+    # AddSub generator uses numbered blocks joined by the master definition.
+    return master
+
+
 def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Witness]:
     body = module_body(source, module)
     origin_match = re.search(r'^def output_origins : List String := \[(.*)\]$', body, re.M)
@@ -96,7 +125,8 @@ def source_witnesses(source: str, module: str = "AddSub_is_add") -> dict[str, Wi
     # Parse only direct equality binders emitted in the current Lean format:
     #   (w.v306 - <rhs>) = 0
     # A missing or repeated binder is UNKNOWN, never silently accepted.
-    matches = re.findall(r'^\s*\(w\.v(\d+) - (.+)\) = 0(?: ∧)?$', body, re.M)
+    matches = re.findall(r'^\s*\(w\.v(\d+) - (.+)\) = 0(?: ∧)?$',
+                         active_constraint_text(body), re.M)
     rhs_by_id: dict[str, list[str]] = {}
     for var_id, rhs in matches:
         rhs_by_id.setdefault(var_id, []).append(rhs)
