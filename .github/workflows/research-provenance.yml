@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: 7bf90d093694db327ee9a01057ca176a8052ba63
+          ref: bbef09c2f02caf2c42148583f1498060071325d9
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: 7bf90d093694db327ee9a01057ca176a8052ba63
+          ref: bbef09c2f02caf2c42148583f1498060071325d9
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: 7bf90d093694db327ee9a01057ca176a8052ba63
+          ref: bbef09c2f02caf2c42148583f1498060071325d9
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
