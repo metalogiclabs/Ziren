@@ -12,6 +12,31 @@ functional semantics of the chip constraints or a Lean proof's claim fidelity.
 import json
 
 
+def stable_names_from_ranges(ranges):
+    """Represent PicusInfo.name_to_colrange by field-relative source paths.
+
+    Unlike col_to_name's absolute numeric suffix, `field[offset]` survives
+    insertion of another field earlier in the AIR layout.  Overlap, invalid
+    ranges or ambiguous field identities cannot qualify a source map.
+    """
+    if not isinstance(ranges, dict):
+        return None
+    names = {}
+    for field, bounds in ranges.items():
+        if (not isinstance(field, str) or not field
+                or not isinstance(bounds, (tuple, list)) or len(bounds) != 2):
+            return None
+        start, end = bounds
+        if (type(start) is not int or type(end) is not int
+                or start < 0 or end <= start or end - start > 1_000_000):
+            return None
+        for offset, col in enumerate(range(start, end)):
+            if col in names:
+                return None
+            names[col] = f"{field}[{offset}]"
+    return names
+
+
 def signature(expr, names, bindings):
     """Canonical source expression or None if its identity is not qualified.
 
@@ -19,6 +44,8 @@ def signature(expr, names, bindings):
     ("add"|"sub"|"mul"|"div", lhs, rhs), ("neg", arg),
     or ("pow", exponent, arg).  No arithmetic rewriting is assumed.
     """
+    if not isinstance(names, dict) or not isinstance(bindings, dict):
+        return None
     if len(set(names.values())) != len(names):
         return None
     seen = [0]
