@@ -97,6 +97,8 @@ def selftest(source: str) -> dict[str, str]:
     a, b = "state_send[1]", "state_send[3]"
     if a not in baseline or b not in baseline or baseline[a] == baseline[b]:
         raise AssertionError("authentic derived ports are not independently witnessed")
+    if "@frame[" not in baseline[a].expression or "@next_pc[" not in baseline[b].expression:
+        raise AssertionError("source names are not field-relative: v2 baseline unqualified")
 
     # Consequential rebind: same emitted port labels and values, swapped right-hand sides.
     body = module_body(source, "AddSub_is_add")
@@ -115,15 +117,25 @@ def selftest(source: str) -> dict[str, str]:
     if source_witnesses(renumbered) != baseline:
         raise AssertionError("fresh-variable alpha renumbering caused a false positive")
 
+    # Simulated insertion shifts all witness variable IDs; the source field-relative
+    # identifiers remain unchanged. This is not an actual Rust AIR source edit.
+    shifted = re.sub(r'\bv(\d+)\b',
+                     lambda m: "v" + str(int(m.group(1)) + 1000), source)
+    if source_witnesses(shifted) != baseline:
+        raise AssertionError("synthetic column-index shift caused a false positive")
+
     # Fail closed when the emitted equation is gone: no equality witness for a.
     missing = re.sub(r'(?m)^\s*\(w\.v306 - .+\) = 0 ∧\n', "", source)
     if missing == source or a in source_witnesses(missing):
         raise AssertionError("missing equality was silently accepted")
 
     # Source-name collisions are not a license to equate distinct variables.
-    duplicated_name = source.replace("/-- `frame_7` -/", "/-- `frame_8` -/", 1)
-    if duplicated_name == source:
-        raise AssertionError("authentic frame annotation changed: requalify experiment")
+    field_tags = re.findall(r'/-- `([^`]+)` -/\s*\n\s*v\d+ : F',
+                            module_body(source, "AddSub_is_add"))
+    if len(field_tags) < 2:
+        raise AssertionError("authentic field annotation set changed")
+    duplicated_name = source.replace(f"/-- `{field_tags[0]}` -/",
+                                     f"/-- `{field_tags[1]}` -/", 1)
     try:
         source_witnesses(duplicated_name)
     except Unwitnessed:
@@ -150,8 +162,8 @@ def main() -> int:
     for origin, expression in sorted(witnesses.items()):
         print(f"SOURCE_EQ_WITNESSED: {origin} <- {expression}")
     if args.selftest:
-        print("SOURCE_EQ_CONTROLS_OK: source rebind detected; fresh alpha rename retained; missing equality and duplicate names UNKNOWN")
-        print("BOUNDARY: authentic Lean output + synthetic mutations; not column-insertion or AIR semantics proof")
+        print("SOURCE_EQ_CONTROLS_OK: rebind detected; fresh and synthetic full-index renumbering retained; missing equality and duplicate names UNKNOWN")
+        print("BOUNDARY: authentic Lean output + synthetic mutations; real AIR field insertion and semantics not proven")
     return 0
 
 
