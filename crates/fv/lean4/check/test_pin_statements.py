@@ -296,6 +296,52 @@ class PinTest(unittest.TestCase):
                           "outputs": [(5, "state_send[0]"), (3, "mem_write[0].val[0]")]},
                          "output state_send[0] is carried by another column: derived -> clk")
 
+    def test_swapping_same_base_outputs_must_not_pass_as_unchanged(self):
+        # Both versions are deterministic, but their positional output contracts differ.
+        # With input=3 the old outputs are [7, 8], and the new ones are [8, 7].
+        kw = {
+            "fields": [(0, "public_0"), (1, None), (2, None)],
+            "constraints": ["(w.v1 - (w.v0 + (4 : F))) = 0",
+                            "(w.v2 - (w.v0 + (5 : F))) = 0"],
+            "inputs": [(0, "input[0]")],
+            "hyps": [],
+            "assumed": [],
+        }
+        original = chip_file(**kw, outputs=[(1, "send[0]"), (2, "send[1]")])
+        swapped = chip_file(**kw, outputs=[(2, "send[0]"), (1, "send[1]")])
+        self.assertNotEqual(original, swapped)
+        n, report = self.run_compare({"Toy": original}, {"Toy": swapped})
+        self.assertGreater(n, 0, "port-binding swap escaped pinning:\n" + report)
+
+    def test_moving_output_to_unconstrained_same_base_column_is_weakening(self):
+        # v2 is free; replacing constrained v1 by v2 is not a deterministic output.
+        kw = {
+            "fields": [(0, "public_0"), (1, None), (2, None)],
+            "constraints": ["(w.v1 - (w.v0 + (4 : F))) = 0"],
+            "inputs": [(0, "input[0]")],
+            "hyps": [],
+            "assumed": [],
+        }
+        n, report = self.run_compare(
+            {"Toy": chip_file(**kw, outputs=[(1, "send[0]")])},
+            {"Toy": chip_file(**kw, outputs=[(2, "send[0]")])},
+        )
+        self.assertGreater(n, 0, "free output substitution escaped pinning:\n" + report)
+
+    def test_same_base_insertion_before_output_is_not_a_weakening(self):
+        # v1 retains the same meaning after becoming v2. An additional unused
+        # derived field must not make the pinned output appear weakened.
+        common = {"inputs": [(0, "input[0]")], "hyps": [], "assumed": []}
+        n, report = self.run_compare(
+            {"Toy": chip_file(**common, fields=[(0, "public_0"), (1, None)],
+                              constraints=["(w.v1 - (w.v0 + (4 : F))) = 0"],
+                              outputs=[(1, "send[0]")])},
+            {"Toy": chip_file(**common, fields=[(0, "public_0"), (1, None), (2, None)],
+                              constraints=["(w.v2 - (w.v0 + (4 : F))) = 0"],
+                              outputs=[(2, "send[0]")])},
+        )
+        self.assertEqual(n, 0, "harmless column insertion wrongly rejected:\n" + report)
+
     def test_helper_redefined_is_weakening(self):
         self.assert_weak({"helper": "def rel : List F → List F → Prop := fun _ _ => True"},
                          "helper relation redefined")
