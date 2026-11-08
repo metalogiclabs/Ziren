@@ -8,8 +8,6 @@ on:
   # The SNARK proofs run nightly, not per push: they held the only self-hosted
   # slot for hours. A schedule runs on the default branch only, so a feature
   # branch needs `workflow_dispatch`.
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
 
 # One run per branch. Without this a superseded push queues behind the run it
