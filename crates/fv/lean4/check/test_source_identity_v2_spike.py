@@ -11,7 +11,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from source_identity_v2_spike import classify, signature, stable_names_from_ranges
+from source_identity_v2_spike import (
+    anchored_signature, classify, classify_anchored, pair_ports, signature,
+    stable_names_from_ranges,
+)
 
 
 def var(n):
@@ -27,6 +30,58 @@ def const(n):
 
 
 class SourceIdentitySpikeTest(unittest.TestCase):
+    def test_derived_port_requires_equality_in_emitted_constraints(self):
+        # PicusConstraint::new_equality(v, expr) emits Eq(Sub(v, expr)).
+        # Producer metadata can say v101 originated from public[0]+4 even
+        # after that actual equality is removed from the module.
+        source = add(var(0), const(4))
+        bindings = {101: source}
+        eq = ("eq", ("sub", var(101), source))
+        self.assertEqual(
+            anchored_signature(var(101), {0: "public[0]"}, bindings, [eq]),
+            signature(var(101), {0: "public[0]"}, bindings),
+        )
+        self.assertIsNone(anchored_signature(var(101), {0: "public[0]"}, bindings, []))
+        self.assertEqual(
+            classify_anchored(
+                [("send[0]", var(101))], [("send[0]", var(101))],
+                {0: "public[0]"}, bindings, [eq],
+                {0: "public[0]"}, bindings, [],
+            ),
+            ("UNKNOWN", ["send[0]"]),
+        )
+
+    def test_nested_reification_requires_every_observed_equality(self):
+        first = add(var(0), const(4))
+        second = ("mul", var(101), const(2))
+        bindings = {101: first, 102: second}
+        e1 = ("eq", ("sub", var(101), first))
+        e2 = ("eq", ("sub", var(102), second))
+        names = {0: "public[0]"}
+        self.assertIsNotNone(anchored_signature(var(102), names, bindings, [e1, e2]))
+        self.assertIsNone(anchored_signature(var(102), names, bindings, [e2]))
+        self.assertEqual(anchored_signature(var(0), names, {}, []), signature(var(0), names, {}))
+
+    def test_wrong_binding_equality_is_not_provenance(self):
+        expected = add(var(0), const(4))
+        wrong = add(var(0), const(5))
+        bindings = {101: expected}
+        self.assertIsNone(anchored_signature(
+            var(101), {0: "state[0]"}, bindings,
+            [("eq", ("sub", var(101), wrong))],
+        ))
+
+    def test_post_extraction_port_mutation_requires_new_origins(self):
+        # `build_top_module` currently clears/rebuilds the top module's ports
+        # *after* `extract_module` stores PORT_ORIGINS.  The old v1 scanner
+        # silently falls back when these lengths disagree; v2 must not.
+        self.assertIsNone(pair_ports([var(0), var(1)], ["selector.add"]))
+        old = pair_ports([var(0)], ["selector.add"])
+        new = pair_ports([var(0), var(1)], ["selector.add"])
+        self.assertEqual(classify_anchored(old, new, {0: "selector[0]"}, {}, [],
+                                           {0: "selector[0]", 1: "selector[1]"}, {}, []),
+                         ("UNKNOWN", ["<unqualified interface>"]))
+
     def test_field_relative_names_survive_main_column_insertion(self):
         # PicusInfo.col_to_name uses absolute suffixes (public_0 -> public_1),
         # whereas name_to_colrange can recover source field + local offset.
