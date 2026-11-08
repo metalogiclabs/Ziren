@@ -44,6 +44,9 @@ pub struct AddSubCols<T> {
     pub pc: T,
     pub next_pc: T,
 
+    /// Research-only zero-filled column: changes absolute AIR indices but is not read by any constraint.
+    pub provenance_padding: T,
+
     /// `is_add * (1 - op_a_0)` — a discarded register-0 result leaves the
     /// equation ungated (the frame pins the commit to zero, which the true
     /// sum need not equal).  Materialized to keep the carry constraints at
