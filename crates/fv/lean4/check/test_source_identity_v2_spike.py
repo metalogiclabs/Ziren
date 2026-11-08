@@ -11,15 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-try:
-    from source_identity_v2_spike import classify, signature
-except ImportError:
-    # The initial RED run establishes that no implementation exists yet.
-    def classify(*_args):
-        return "NOT_IMPLEMENTED", []
-
-    def signature(*_args):
-        return "NOT_IMPLEMENTED"
+from source_identity_v2_spike import classify, signature
 
 
 def var(n):
