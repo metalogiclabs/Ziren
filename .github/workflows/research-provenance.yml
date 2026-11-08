@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          ref: bca25971b6652d96d0f3f791865d387ee9b386fc
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          ref: bca25971b6652d96d0f3f791865d387ee9b386fc
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -47,7 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          ref: bca25971b6652d96d0f3f791865d387ee9b386fc
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -94,6 +94,10 @@ jobs:
           print(f"V1_BASELINE_LABEL_MIGRATION_REQUIRED: {previous} -> {labels}")
           print("SCOPE: generated Lean source verified; Lean proof and full chip semantics not checked")
           PY
+      - name: Replay source-equality witnesses and controlled rebinds against authentic generator output
+        run: |
+          python3 crates/fv/picus/scripts/port_source_witness.py --selftest < generated/ZirenDet/Chips/AddSub.lean
+          python3 crates/fv/picus/scripts/port_source_witness.py --module AddSub_is_sub < generated/ZirenDet/Chips/AddSub.lean
       - name: Retain authentic generated Lean evidence
         if: always()
         uses: actions/upload-artifact@v4
