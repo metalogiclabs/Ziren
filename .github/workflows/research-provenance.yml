@@ -39,3 +39,65 @@ jobs:
         with:
           toolchain: nightly-2026-09-17
       - run: cargo test -p zkm-picus port_origin_tests --lib
+
+  generate:
+    name: Authentic AddSub selector-port source replay
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: e545f4b68528ab6574b6917bbf1820f1cfd0c785
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+      - name: Generate actual AddSub Lean module (no external snippets)
+        run: |
+          mkdir -p generated
+          cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated
+      - name: Qualify current selector origins and flag baseline migration
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+
+          generated = Path("generated/ZirenDet/Chips/AddSub.lean")
+          lean = generated.read_text()
+          top = re.search(r"(?ms)^namespace top\s*\n(.*?)^end top\s*$", lean)
+          assert top, "authentic generator did not emit the top module"
+          body = top.group(1)
+
+          origins = re.search(r'(?m)^def output_origins : List String := \[(.*)\]$', body)
+          assert origins, "missing top output origins"
+          labels = re.findall(r'"([^"]+)"', origins.group(1))
+          assert labels == ["selector.is_add", "selector.is_sub"], labels
+
+          outputs = re.search(r"(?m)^def outputs \(w : W\) : List F :=\n\s*(\[[^\n]*\])", body)
+          assert outputs, "missing top outputs"
+          values = [x.strip() for x in outputs.group(1)[1:-1].split(",")]
+          assert len(values) == len(labels) == 2, (values, labels)
+          assert len(set(values)) == 2, "two selectors bound to the same output value"
+          assert re.search(r"(?m)^def inputs \(_w : W\) : List F := \[\]$", body), "top input shape changed"
+
+          for label, value in zip(labels, values):
+              ident = label.replace(".", "_")
+              named = re.search(rf"(?m)^def out_{re.escape(ident)} \(w : W\) : F := (.+)$", body)
+              assert named, f"missing named output {ident}"
+              assert named.group(1).strip() == value, (ident, named.group(1), value)
+
+          manifest = json.loads(Path("crates/fv/lean4/statements.json").read_text())
+          previous = manifest["modules"]["AddSub/top"]["outputs"]
+          assert previous == ["col is_add#0 <- is_add", "col is_sub#0 <- is_sub"], previous
+          print(f"AUTHENTIC_ADD_SUB_TOP_ORIGINS_OK: {list(zip(labels, values))}")
+          print(f"V1_BASELINE_LABEL_MIGRATION_REQUIRED: {previous} -> {labels}")
+          print("SCOPE: generated Lean source verified; Lean proof and full chip semantics not checked")
+          PY
+      - name: Retain authentic generated Lean evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zirensource-AddSub-top-origin
+          path: generated/ZirenDet/Chips/AddSub.lean
+          if-no-files-found: warn
