@@ -2299,6 +2299,25 @@ fn is_abstract(m: &PicusModule) -> bool {
     m.constraints.is_empty() && m.calls.is_empty() && m.postconditions.is_empty()
 }
 
+/// An origin list is meaningful only if it covers the *current* interface.
+/// This also catches later edits to a module after `extract_module` recorded its origins.
+fn validate_port_origins(m: &PicusModule, ins: &[String], outs: &[String]) -> io::Result<()> {
+    if m.inputs.len() != ins.len() || m.outputs.len() != outs.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "module {} has {} inputs/{} output ports but {} input/{} output origins",
+                m.name,
+                m.inputs.len(),
+                m.outputs.len(),
+                ins.len(),
+                outs.len()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn write_module(
     w: &mut impl Write,
     m: &PicusModule,
@@ -2441,6 +2460,7 @@ fn write_module(
         }
     };
     if let Some((ins, outs)) = crate::picus_builder::PORT_ORIGINS.lock().unwrap().get(&m.name) {
+        validate_port_origins(m, ins, outs)?;
         let fmt = |ports: &[PicusExpr], origins: &[String]| -> String {
             ports
                 .iter()
@@ -2624,6 +2644,27 @@ pub fn write_chip(
     writeln!(f, "end ZirenDet.Chips.{chip_ident}\n")?;
     writeln!(f, "#print \"PICUS_FILE_DONE\"")?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod port_origin_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_incomplete_port_origins() {
+        let mut module = PicusModule::new("test".to_string());
+        module.inputs.push(PicusExpr::Var(0));
+        module.outputs.push(PicusExpr::Var(1));
+
+        assert!(validate_port_origins(&module, &[], &["output[0]".to_string()]).is_err());
+        assert!(validate_port_origins(&module, &["input[0]".to_string()], &[]).is_err());
+        assert!(validate_port_origins(
+            &module,
+            &["input[0]".to_string()],
+            &["output[0]".to_string()]
+        )
+        .is_ok());
+    }
 }
 
 /// Writes the shared prelude (`ZirenDet/Basic.lean`) if it is missing, (re)writes the root module
