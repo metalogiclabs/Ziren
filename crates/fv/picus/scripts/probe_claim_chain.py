@@ -8,6 +8,7 @@ This measures two controls' complementarity; it is NOT a Lean proof check.
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -24,6 +25,10 @@ REL = ("def rel (ins outs : List F) : Prop :=\n"
        "  ∃ w : W, constraints w ∧ inputs w = ins ∧ outputs w = outs")
 DETERMINISTIC_CONCLUSION = "    outputs w = outputs w' := by"
 OUTPUT_BINDER = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\n"
+# Genuine active equality for an internal witness field.  In this pinned
+# AddSub generation, v308 occurs exactly once and is absent from output ports:
+# removing it changes the accepted W-valuations without changing port syntax.
+INTERNAL_BINDER = "  (w.v308 - (-1 : F)) = 0 ∧\n"
 END_ADD = "\nend AddSub_is_add"
 
 
@@ -34,6 +39,11 @@ def replace_once(source: str, old: str, new: str) -> str:
 
 
 def mutations(source: str) -> dict[str, str]:
+    # Exact qualification for the deliberately *unobserved* internal field:
+    # one declaration and one live equality, no other source occurrence.
+    if len(re.findall(r"\bv308\b", source_v4.module_body(
+            source, "AddSub_is_add"))) != 2:
+        raise ValueError("v308 is no longer a uniquely constrained internal field")
     disconnected = replace_once(source, OUTPUT_BINDER, "")
     disconnected = replace_once(
         disconnected, END_ADD,
@@ -48,6 +58,7 @@ def mutations(source: str) -> dict[str, str]:
             source, DETERMINISTIC_CONCLUSION,
             "    True := by"),
         "binder_disconnected": disconnected,
+        "internal_constraint_removed": replace_once(source, INTERNAL_BINDER, ""),
     }
 
 
@@ -90,6 +101,7 @@ def experiment(path: Path) -> dict:
         "rel_disconnected": ("UNCHANGED", True),
         "theorem_weakened": ("UNCHANGED", True),
         "binder_disconnected": ("UNKNOWN", False),
+        "internal_constraint_removed": ("UNCHANGED", False),
     }
     for name, (source_status, v1_weakening) in expected.items():
         observed = results[name]
@@ -106,6 +118,9 @@ def experiment(path: Path) -> dict:
     if not any("constraints changed" in item for item in
                results["binder_disconnected"]["v1_information"]):
         raise AssertionError(results["binder_disconnected"])
+    if not any("constraints changed" in item for item in
+               results["internal_constraint_removed"]["v1_information"]):
+        raise AssertionError(results["internal_constraint_removed"])
     if any(case["new_axioms"] for case in results.values()):
         raise AssertionError("unexpected new axiom in text mutation probe")
     return results
