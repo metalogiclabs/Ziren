@@ -50,6 +50,13 @@ class PortRangeGuardTests(unittest.TestCase):
         result = guard.port_range(altered, "AddSub_is_add", "state_recv[0]", "state_send[0]")
         self.assertEqual(result["status"], "UNKNOWN")
 
+    def test_contradictory_unit_gate_does_not_certify_a_bound(self):
+        anchor = "  (w.v408 - (1 : F)) = 0 ∧\n"
+        self.assertEqual(self.original.count(anchor), 1)
+        altered = self.original.replace(anchor, anchor + "  (w.v408 - (0 : F)) = 0 ∧\n", 1)
+        result = guard.port_range(altered, "AddSub_is_add", "state_recv[0]", "state_send[0]")
+        self.assertEqual(result["status"], "UNKNOWN")
+
 
 if __name__ == "__main__":
     unittest.main()
