@@ -43,7 +43,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach 78722a403e7f8a2147e222ab14053b5c48f05720
+          git switch --detach 7951050dc1dc2746d3ab4ef8336a8aecfaac4b30
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
@@ -100,7 +100,8 @@ jobs:
           PY
           python3 crates/fv/picus/scripts/probe_claim_chain.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v5.json
           test "$(sha256sum generated-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "c2137288a14ba63c5d610205c2470992dbeb3da325ae46fc1721b07a9c3c795b"
-          ZIREN_ADD_SUB_LEAN=generated-r2/ZirenDet/Chips/AddSub.lean python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_addsub_witness_probe.py' -v
+          test "$(sha256sum generated-shard-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "fc8f68cf10b88f908e7456f32168124e93c90350d469f448583dd84cb55dc1d0"
+          ZIREN_ADD_SUB_LEAN=generated-r2/ZirenDet/Chips/AddSub.lean ZIREN_SHARD_ADD_SUB_LEAN=generated-shard-r2/ZirenDet/Chips/AddSub.lean python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_addsub_witness_probe.py' -v
           python3 crates/fv/picus/scripts/addsub_witness_probe.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v6-domain-witness.json
           python3 - <<'PY' | tee rust-shard-u16-candidate.json
           import json
@@ -133,6 +134,13 @@ jobs:
               }
           except v6.Unqualified as error:
               result["witness"] = {"status": "UNKNOWN", "reason": str(error)}
+          if (weak or source_status != "UNCHANGED" or ports or
+                  result["witness"].get("status") != "QUALIFIED_SOURCE_ARITHMETIC" or
+                  result["witness"]["failed"] or
+                  result["witness"]["constraint_count"] != 235 or
+                  result["witness"]["inputs"][21] != 65536 or
+                  result["witness"]["outputs"][0] != 65536):
+              raise AssertionError("Rust-origin shard-domain separation not qualified: " + repr(result))
           print(json.dumps(result, indent=2, sort_keys=True))
           PY
       - name: Preserve actual generated evidence at each threshold
