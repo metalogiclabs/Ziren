@@ -31,7 +31,8 @@ jobs:
           cargo run -p zkm-picus -- --chip AddSub --format lean --lean-out-dir generated-r2 --reify-threshold 2
           for mutation in \
             insert:3d3908185772c829cca76189c152ea0d36e96e2a \
-            rebind:b27a54b029d73bc00ab8bf351f890bcf4325a3fe
+            rebind:b27a54b029d73bc00ab8bf351f890bcf4325a3fe \
+            shard:ce21e5838c95d354f9b806ad0cf3ed340afa9770
           do
             kind="${mutation%%:*}"
             pinned="${mutation#*:}"
@@ -101,6 +102,39 @@ jobs:
           test "$(sha256sum generated-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "c2137288a14ba63c5d610205c2470992dbeb3da325ae46fc1721b07a9c3c795b"
           ZIREN_ADD_SUB_LEAN=generated-r2/ZirenDet/Chips/AddSub.lean python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_addsub_witness_probe.py' -v
           python3 crates/fv/picus/scripts/addsub_witness_probe.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v6-domain-witness.json
+          python3 - <<'PY' | tee rust-shard-u16-candidate.json
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "crates/fv/picus/scripts")
+          import probe_claim_chain as v5
+          import port_source_witness as v4
+          import addsub_witness_probe as v6
+          from pin_statements import compare_module
+          base_path = Path("generated-r2/ZirenDet/Chips/AddSub.lean")
+          changed_path = Path("generated-shard-r2/ZirenDet/Chips/AddSub.lean")
+          base, changed = base_path.read_text(), changed_path.read_text()
+          old, new = v5.module_view(base_path, "AddSub_is_add"), v5.module_view(changed_path, "AddSub_is_add")
+          weak, info = compare_module(old["manifest"], new["manifest"])
+          source_status, ports = v4.compare_sources(base, changed, "AddSub_is_add")
+          result = {"case": "Rust RTypeFrameCols shard U16Range omission, fork-only",
+                    "v1_weakening": weak, "v1_information": info,
+                    "v4_status": source_status, "v4_ports": ports,
+                    "source_original_sha": v6.hashlib.sha256(base.encode()).hexdigest(),
+                    "source_mutant_sha": v6.hashlib.sha256(changed.encode()).hexdigest()}
+          try:
+              witness = v6.evaluate(changed, 65536)
+              result["witness"] = {
+                  "status": "QUALIFIED_SOURCE_ARITHMETIC",
+                  "constraint_count": witness["constraint_count"],
+                  "failed": witness["failed"],
+                  "inputs": witness["inputs"],
+                  "outputs": witness["outputs"],
+              }
+          except v6.Unqualified as error:
+              result["witness"] = {"status": "UNKNOWN", "reason": str(error)}
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
       - name: Preserve actual generated evidence at each threshold
         if: always()
         uses: actions/upload-artifact@v4
@@ -112,7 +146,9 @@ jobs:
             generated-r2/ZirenDet/Chips/AddSub.lean
             generated-insert-r2/ZirenDet/Chips/AddSub.lean
             generated-rebind-r2/ZirenDet/Chips/AddSub.lean
+            generated-shard-r2/ZirenDet/Chips/AddSub.lean
             generated-disconnected-lean
             claim-chain-v5.json
             claim-chain-v6-domain-witness.json
+            rust-shard-u16-candidate.json
           if-no-files-found: warn
