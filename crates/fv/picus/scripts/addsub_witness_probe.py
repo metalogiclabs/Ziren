@@ -70,7 +70,7 @@ def _arithmetic(expression: str, values: dict[int, int]) -> int:
     return walk(tree) % FIELD_MODULUS
 
 
-def _ports(body: str, port_name: str, values: dict[int, int]) -> list[int]:
+def _ports(body: str, port_name: str, values: dict[int, int], equations: dict[int, str]) -> list[int]:
     pattern = rf"^def {port_name} \(w : W\) : List F :=\s*\n\s*\[([^\]\n]+)\]$"
     matches = re.findall(pattern, body, re.M)
     if len(matches) != 1:
@@ -85,11 +85,17 @@ def _ports(body: str, port_name: str, values: dict[int, int]) -> list[int]:
     origins = re.findall(r'"([^"\n]+)"', origin_lines[0])
     if len(origins) != len(expressions) or len(origins) != len(set(origins)):
         raise Unqualified(f"ambiguous {origins_name} / port mapping")
-    expected = (21, "state_recv[0]", "w.v493") if port_name == "inputs" else (
-        0, "state_send[0]", "w.v474")
-    idx, origin, variable = expected
-    if len(origins) <= idx or (origins[idx], expressions[idx]) != (origin, variable):
-        raise Unqualified(f"expected external {origin} is not bound to {variable}")
+    idx, origin = (21, "state_recv[0]") if port_name == "inputs" else (0, "state_send[0]")
+    if len(origins) <= idx or origins[idx] != origin:
+        raise Unqualified(f"expected external {origin} has changed identity or position")
+    # The generator may renumber *derived* columns after a genuine Rust AIR
+    # edit. Qualify the external port by its source label and a live equation
+    # to frame[0] times a gate independently proved to equal field one.
+    port_id = int(expressions[idx][3:])
+    expression = equations.get(port_id, "")
+    echo = re.fullmatch(r"\(w\.v6 \* w\.v(\d+)\)", expression)
+    if not echo or equations.get(int(echo.group(1))) != "(1 : F)":
+        raise Unqualified(f"external {origin} no longer has an exact frame[0] echo equation")
     return [values[int(x[3:])] for x in expressions]
 
 
@@ -179,8 +185,8 @@ def evaluate(source: str, frame0: int) -> dict:
         "frame0": frame0,
         "constraint_count": len(checked),
         "failed": failures,
-        "inputs": _ports(body, "inputs", values),
-        "outputs": _ports(body, "outputs", values),
+        "inputs": _ports(body, "inputs", values, equations),
+        "outputs": _ports(body, "outputs", values, equations),
         "assignments": {f"v{idx}": values[idx] for idx in sorted(values)},
     }
 
