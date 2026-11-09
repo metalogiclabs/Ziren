@@ -42,7 +42,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach 5ab8d56a6ac0ff28134f57c1c0dc084670a62c4c
+          git switch --detach 4fc62129205531ec37800a34112f7643fc9919ce
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
