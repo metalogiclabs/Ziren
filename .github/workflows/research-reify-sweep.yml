@@ -42,7 +42,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach c883ca4686cb40aaf7d3940a7fe1112f41e3170c
+          git switch --detach 5ab8d56a6ac0ff28134f57c1c0dc084670a62c4c
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
@@ -97,6 +97,7 @@ jobs:
           Path("generated-disconnected-lean").write_text(disconnected)
           print("BOUNDARY: source-level active-constraint witness only; not Lean proof, rel/theorem check, or production pinning")
           PY
+          python3 crates/fv/picus/scripts/probe_claim_chain.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v5.json
       - name: Preserve actual generated evidence at each threshold
         if: always()
         uses: actions/upload-artifact@v4
@@ -109,4 +110,5 @@ jobs:
             generated-insert-r2/ZirenDet/Chips/AddSub.lean
             generated-rebind-r2/ZirenDet/Chips/AddSub.lean
             generated-disconnected-lean
+            claim-chain-v5.json
           if-no-files-found: warn
