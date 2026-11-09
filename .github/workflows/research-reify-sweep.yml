@@ -43,7 +43,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach 7951050dc1dc2746d3ab4ef8336a8aecfaac4b30
+          git switch --detach 01f94e4ea9e20f22b245d4257d9f2eb11c3a56b2
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
@@ -102,6 +102,27 @@ jobs:
           test "$(sha256sum generated-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "c2137288a14ba63c5d610205c2470992dbeb3da325ae46fc1721b07a9c3c795b"
           test "$(sha256sum generated-shard-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "fc8f68cf10b88f908e7456f32168124e93c90350d469f448583dd84cb55dc1d0"
           ZIREN_ADD_SUB_LEAN=generated-r2/ZirenDet/Chips/AddSub.lean ZIREN_SHARD_ADD_SUB_LEAN=generated-shard-r2/ZirenDet/Chips/AddSub.lean python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_addsub_witness_probe.py' -v
+          ZIREN_REIFY_SOURCE_ROOT=. python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_port_range_guard.py' -v
+          python3 - <<'PY' | tee port-range-v25.json
+          import json
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, "crates/fv/picus/scripts")
+          import port_range_guard as v25
+          src = {name: Path(f"generated-{name}/ZirenDet/Chips/AddSub.lean").read_text()
+                 for name in ("default", "r4", "r2", "insert-r2", "rebind-r2", "shard-r2")}
+          observed = {name: v25.port_range(code, "AddSub_is_add", "state_recv[0]", "state_send[0]")
+                      for name, code in src.items()}
+          comparison = v25.compare_port_range(src["r2"], src["shard-r2"], "AddSub_is_add",
+                                               "state_recv[0]", "state_send[0]")
+          for name in ("default", "r4", "r2", "insert-r2", "rebind-r2"):
+              assert observed[name] == {"status": "QUALIFIED_EXPLICIT_BOUND", "maximum": 65535}, (name, observed[name])
+          assert observed["shard-r2"] == {"status": "NO_EXPLICIT_BOUND_FOUND", "maximum": None}
+          assert comparison == {"status": "EXPLICIT_BOUND_REMOVED", "before_maximum": 65535,
+                                "after_maximum": None}
+          print(json.dumps({"qualification": "explicit named-port bound only, not full semantic equivalence",
+                            "observed": observed, "comparison": comparison}, indent=2, sort_keys=True))
+          PY
           python3 crates/fv/picus/scripts/addsub_witness_probe.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v6-domain-witness.json
           python3 - <<'PY' | tee rust-shard-u16-candidate.json
           import json
@@ -159,4 +180,5 @@ jobs:
             claim-chain-v5.json
             claim-chain-v6-domain-witness.json
             rust-shard-u16-candidate.json
+            port-range-v25.json
           if-no-files-found: warn
