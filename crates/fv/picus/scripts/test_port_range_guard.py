@@ -1,12 +1,16 @@
 """Source-native named-port U16 guard controls (bounded; not a kernel proof)."""
 
 import unittest
+import os
 from pathlib import Path
 
 import port_range_guard as guard
 
 
-ROOT = Path(__file__).parent / "ziren_replay_artifact_42544409666"
+ROOT = Path(os.environ.get(
+    "ZIREN_REIFY_SOURCE_ROOT",
+    str(Path(__file__).parent / "ziren_replay_artifact_42544409666"),
+))
 ORIG = ROOT / "generated-r2/ZirenDet/Chips/AddSub.lean"
 MUTANT = ROOT / "generated-shard-r2/ZirenDet/Chips/AddSub.lean"
 R4 = ROOT / "generated-r4/ZirenDet/Chips/AddSub.lean"
