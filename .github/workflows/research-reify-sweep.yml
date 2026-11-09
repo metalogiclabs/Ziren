@@ -81,14 +81,14 @@ jobs:
           # Lean definition, while deleting it from active constraints_4.
           # The old module-wide grep would falsely classify this as unchanged.
           honest = src["r2"]
-          equality = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\\n"
-          end_marker = "\\nend AddSub_is_add"
+          equality = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\n"
+          end_marker = "\nend AddSub_is_add"
           assert honest.count(equality) == 1 and honest.count(end_marker) == 1
           disconnected = honest.replace(equality, "", 1)
           disconnected = disconnected.replace(
               end_marker,
-              "\\ndef disconnected (w : W) : Prop :=\\n"
-              "  (w.v477 - (w.v443 * w.v444)) = 0\\n" + end_marker,
+              "\ndef disconnected (w : W) : Prop :=\n"
+              "  (w.v477 - (w.v443 * w.v444)) = 0\n" + end_marker,
               1,
           )
           lost = w.compare_sources(honest, disconnected, "AddSub_is_add")
