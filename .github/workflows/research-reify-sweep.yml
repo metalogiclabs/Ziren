@@ -42,7 +42,7 @@ jobs:
           done
       - name: Diagnose source signature survival without promoting unknowns
         run: |
-          git switch --detach 783e453663f1c211f8e2b5726687f08c82c3ee09
+          git switch --detach eb2c2b98b4d337a0ffcc4f1e387d2815ccba1a1f
           python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_source_fidelity_compare_v2.py' -v
           python3 - <<'PY'
           import importlib.util
@@ -98,6 +98,9 @@ jobs:
           print("BOUNDARY: source-level active-constraint witness only; not Lean proof, rel/theorem check, or production pinning")
           PY
           python3 crates/fv/picus/scripts/probe_claim_chain.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v5.json
+          test "$(sha256sum generated-r2/ZirenDet/Chips/AddSub.lean | cut -d' ' -f1)" = "c2137288a14ba63c5d610205c2470992dbeb3da325ae46fc1721b07a9c3c795b"
+          ZIREN_ADD_SUB_LEAN=generated-r2/ZirenDet/Chips/AddSub.lean python3 -m unittest discover -s crates/fv/picus/scripts -p 'test_addsub_witness_probe.py' -v
+          python3 crates/fv/picus/scripts/addsub_witness_probe.py generated-r2/ZirenDet/Chips/AddSub.lean | tee claim-chain-v6-domain-witness.json
       - name: Preserve actual generated evidence at each threshold
         if: always()
         uses: actions/upload-artifact@v4
@@ -111,4 +114,5 @@ jobs:
             generated-rebind-r2/ZirenDet/Chips/AddSub.lean
             generated-disconnected-lean
             claim-chain-v5.json
+            claim-chain-v6-domain-witness.json
           if-no-files-found: warn
