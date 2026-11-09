@@ -33,6 +33,7 @@ INTERNAL_BINDER = "  (w.v308 - (-1 : F)) = 0 ∧\n"
 # one and state_send[0] is v474 = v6; the range predicate is not an equation
 # followed by the output-signature comparator.
 FRAME_RANGE = "  ((w.v6 * w.v408)).val ≤ 65535 ∧\n"
+CONSTRAINTS_HEADER = "def constraints_0 (w : W) : Prop :=\n"
 END_ADD = "\nend AddSub_is_add"
 
 
@@ -64,6 +65,8 @@ def mutations(source: str) -> dict[str, str]:
         "binder_disconnected": disconnected,
         "internal_constraint_removed": replace_once(source, INTERNAL_BINDER, ""),
         "frame_range_removed": replace_once(source, FRAME_RANGE, ""),
+        "vacuous_constraints": replace_once(
+            source, CONSTRAINTS_HEADER, CONSTRAINTS_HEADER + "  False ∧\n"),
     }
 
 
@@ -78,6 +81,14 @@ def module_view(path: Path, namespace: str) -> dict:
 def experiment(path: Path) -> dict:
     source = path.read_text()
     variants = mutations(source)
+    # This syntactic intervention has a direct logical consequence, independent
+    # of proof automation: constraints_0 is a conjunct of constraints, which is
+    # an existential witness requirement of rel; False ∧ ... admits no row.
+    vacuous_body = source_v4.module_body(variants["vacuous_constraints"], "AddSub_is_add")
+    if (not source_v4.active_constraint_text(vacuous_body).lstrip().startswith("False ∧")
+            or "  constraints_0 w ∧" not in vacuous_body
+            or "∃ w : W, constraints w ∧" not in vacuous_body):
+        raise AssertionError("vacuity witness is no longer on the active rel path")
     results = {}
     with tempfile.TemporaryDirectory(prefix="ziren-claim-chain-") as temp:
         root = Path(temp)
@@ -108,6 +119,7 @@ def experiment(path: Path) -> dict:
         "binder_disconnected": ("UNKNOWN", False),
         "internal_constraint_removed": ("UNCHANGED", False),
         "frame_range_removed": ("UNCHANGED", False),
+        "vacuous_constraints": ("UNCHANGED", False),
     }
     for name, (source_status, v1_weakening) in expected.items():
         observed = results[name]
@@ -130,6 +142,9 @@ def experiment(path: Path) -> dict:
     if not any("range facts 25 -> 24" in item for item in
                results["frame_range_removed"]["v1_information"]):
         raise AssertionError(results["frame_range_removed"])
+    if not any("constraints changed" in item for item in
+               results["vacuous_constraints"]["v1_information"]):
+        raise AssertionError(results["vacuous_constraints"])
     if any(case["new_axioms"] for case in results.values()):
         raise AssertionError("unexpected new axiom in text mutation probe")
     return results
