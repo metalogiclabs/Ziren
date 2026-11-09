@@ -78,6 +78,18 @@ def _ports(body: str, port_name: str, values: dict[int, int]) -> list[int]:
     expressions = [x.strip() for x in matches[0].split(",")]
     if not expressions or any(not re.fullmatch(r"w\.v\d+", x) for x in expressions):
         raise Unqualified(f"unsupported {port_name} port expression")
+    origins_name = "input_origins" if port_name == "inputs" else "output_origins"
+    origin_lines = re.findall(rf'^def {origins_name} : List String := \[([^\n]+)\]$', body, re.M)
+    if len(origin_lines) != 1:
+        raise Unqualified(f"missing or duplicated {origins_name}")
+    origins = re.findall(r'"([^"\n]+)"', origin_lines[0])
+    if len(origins) != len(expressions) or len(origins) != len(set(origins)):
+        raise Unqualified(f"ambiguous {origins_name} / port mapping")
+    expected = (21, "state_recv[0]", "w.v493") if port_name == "inputs" else (
+        0, "state_send[0]", "w.v474")
+    idx, origin, variable = expected
+    if len(origins) <= idx or (origins[idx], expressions[idx]) != (origin, variable):
+        raise Unqualified(f"expected external {origin} is not bound to {variable}")
     return [values[int(x[3:])] for x in expressions]
 
 
