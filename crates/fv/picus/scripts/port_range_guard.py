@@ -25,7 +25,13 @@ def _parse_ports(body: str, direction: str) -> dict[str, int]:
 
 
 def _unit_gates(active: str) -> set[int]:
-    return {int(i) for i in re.findall(r'^\s*\(w\.v(\d+) - \(1 : F\)\) = 0(?: ∧)?$', active, re.M)}
+    candidates = [int(i) for i in re.findall(
+        r'^\s*\(w\.v(\d+) - \(1 : F\)\) = 0(?: ∧)?$', active, re.M)]
+    equations = re.findall(r'^\s*\(w\.v(\d+) - (.+)\) = 0(?: ∧)?$', active, re.M)
+    counts = {i: sum(int(j) == i for j, _ in equations) for i in candidates}
+    if any(n != 1 for n in counts.values()):
+        raise reader.Unwitnessed("ambiguous or contradictory unit-gate equation")
+    return set(candidates)
 
 
 def _frame_echo(port_id: int, frame_id: int, active: str, gates: set[int]) -> bool:
