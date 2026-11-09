@@ -67,6 +67,26 @@ class AddSubWitnessProbeTests(unittest.TestCase):
         with self.assertRaises(probe.Unqualified):
             probe.evaluate(changed, frame0=0)
 
+    def test_renumbered_derived_fields_preserve_named_external_paths(self):
+        marker = "\nend AddSub_is_add"
+        prefix, suffix = self.original.split(marker, 1)
+        self.assertIn("v493 : F", prefix)
+        renamed = prefix.replace("v493", "v993").replace("v474", "v994")
+        changed = renamed + marker + suffix
+        result = probe.evaluate(changed, frame0=65536)
+        self.assertEqual(result["inputs"][21], 65536)
+        self.assertEqual(result["outputs"][0], 65536)
+        self.assertEqual(result["failed"], ["((w.v6 * w.v408)).val ≤ 65535"])
+
+    @unittest.skipUnless(os.environ.get("ZIREN_SHARD_ADD_SUB_LEAN"), "authentic Rust mutant required")
+    def test_actual_rust_omission_admits_shard_65536(self):
+        generated = Path(os.environ["ZIREN_SHARD_ADD_SUB_LEAN"]).read_text(encoding="utf-8")
+        result = probe.evaluate(generated, frame0=65536)
+        self.assertEqual(result["failed"], [])
+        self.assertEqual(result["constraint_count"], 235)
+        self.assertEqual(result["inputs"][21], 65536)
+        self.assertEqual(result["outputs"][0], 65536)
+
 
 if __name__ == "__main__":
     unittest.main()
