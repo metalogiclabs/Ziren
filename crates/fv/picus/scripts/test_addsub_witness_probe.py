@@ -60,6 +60,13 @@ class AddSubWitnessProbeTests(unittest.TestCase):
         with self.assertRaises(probe.Unqualified):
             probe.evaluate(changed, frame0=0)
 
+    def test_relabelled_external_input_cannot_claim_same_contract(self):
+        label_pair = '"state_recv[0]", "state_recv[1]"'
+        self.assertGreaterEqual(self.original.count(label_pair), 1)
+        changed = self.original.replace(label_pair, '"state_recv_missing", "state_recv[1]"', 1)
+        with self.assertRaises(probe.Unqualified):
+            probe.evaluate(changed, frame0=0)
+
 
 if __name__ == "__main__":
     unittest.main()
