@@ -29,6 +29,10 @@ OUTPUT_BINDER = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\n"
 # AddSub generation, v308 occurs exactly once and is absent from output ports:
 # removing it changes the accepted W-valuations without changing port syntax.
 INTERNAL_BINDER = "  (w.v308 - (-1 : F)) = 0 ∧\n"
+# An active input-domain condition. In the pinned generator, v408 is set to
+# one and state_send[0] is v474 = v6; the range predicate is not an equation
+# followed by the output-signature comparator.
+FRAME_RANGE = "  ((w.v6 * w.v408)).val ≤ 65535 ∧\n"
 END_ADD = "\nend AddSub_is_add"
 
 
@@ -59,6 +63,7 @@ def mutations(source: str) -> dict[str, str]:
             "    True := by"),
         "binder_disconnected": disconnected,
         "internal_constraint_removed": replace_once(source, INTERNAL_BINDER, ""),
+        "frame_range_removed": replace_once(source, FRAME_RANGE, ""),
     }
 
 
@@ -102,6 +107,7 @@ def experiment(path: Path) -> dict:
         "theorem_weakened": ("UNCHANGED", True),
         "binder_disconnected": ("UNKNOWN", False),
         "internal_constraint_removed": ("UNCHANGED", False),
+        "frame_range_removed": ("UNCHANGED", False),
     }
     for name, (source_status, v1_weakening) in expected.items():
         observed = results[name]
@@ -121,6 +127,9 @@ def experiment(path: Path) -> dict:
     if not any("constraints changed" in item for item in
                results["internal_constraint_removed"]["v1_information"]):
         raise AssertionError(results["internal_constraint_removed"])
+    if not any("range facts 25 -> 24" in item for item in
+               results["frame_range_removed"]["v1_information"]):
+        raise AssertionError(results["frame_range_removed"])
     if any(case["new_axioms"] for case in results.values()):
         raise AssertionError("unexpected new axiom in text mutation probe")
     return results
