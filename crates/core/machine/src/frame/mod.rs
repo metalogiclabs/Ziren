@@ -908,13 +908,7 @@ pub fn eval_r_type_frame<AB>(
     builder.send_program(pc.clone(), r_type_instruction::<AB>(frame), is_real.clone());
     builder.when(is_real.clone()).assert_eq(frame.opcode, opcode);
 
-    builder.send_byte(
-        AB::Expr::from_u8(ByteOpcode::U16Range as u8),
-        frame.shard,
-        AB::Expr::ZERO,
-        AB::Expr::ZERO,
-        is_real.clone(),
-    );
+    // Fork-only negative control: omit shard's U16 lookup in the R-type frame.
     builder.send_timestamp_range_checks(frame.clk_16bit_limb, frame.clk_high_limb, is_real.clone());
 
     builder.eval_register_access(
