@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""Bounded Ziren claim-chain mutation probe over authentic generated Lean.
+
+Requires one generated AddSub.lean from a pinned Rust source, the unchanged
+v1 statement checker, and the independent v4 source-identity comparator.
+This measures two controls' complementarity; it is NOT a Lean proof check.
+"""
+
+import argparse
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+# In the repository, the v1 statement checker lives beside picus under fv/lean4.
+# The fork-only probe uses the original checker; it does not modify it.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lean4" / "check"))
+
+import pin_statements as pin_v1
+import port_source_witness as source_v4
+
+
+REL = ("def rel (ins outs : List F) : Prop :=\n"
+       "  ∃ w : W, constraints w ∧ inputs w = ins ∧ outputs w = outs")
+DETERMINISTIC_CONCLUSION = "    outputs w = outputs w' := by"
+OUTPUT_BINDER = "  (w.v477 - (w.v443 * w.v444)) = 0 ∧\n"
+END_ADD = "\nend AddSub_is_add"
+
+
+def replace_once(source: str, old: str, new: str) -> str:
+    if old not in source:
+        raise ValueError(f"authentic generated shape changed: {old[:80]!r}")
+    return source.replace(old, new, 1)
+
+
+def mutations(source: str) -> dict[str, str]:
+    disconnected = replace_once(source, OUTPUT_BINDER, "")
+    disconnected = replace_once(
+        disconnected, END_ADD,
+        "\ndef disconnected (w : W) : Prop :=\n"
+        "  (w.v477 - (w.v443 * w.v444)) = 0\n" + END_ADD)
+    return {
+        "baseline": source,
+        "rel_disconnected": replace_once(
+            source, REL,
+            REL.replace("constraints w ∧", "True ∧")),
+        "theorem_weakened": replace_once(
+            source, DETERMINISTIC_CONCLUSION,
+            "    True := by"),
+        "binder_disconnected": disconnected,
+    }
+
+
+def module_view(path: Path, namespace: str) -> dict:
+    chip, mods, axioms, _header = pin_v1.scan_file(path)
+    found = [m for m in mods if m.namespace == namespace]
+    if chip != "AddSub" or len(found) != 1:
+        raise ValueError(f"unexpected source modules: chip={chip}, matches={len(found)}")
+    return {"manifest": pin_v1.summarize(found[0]), "axioms": axioms}
+
+
+def experiment(path: Path) -> dict:
+    source = path.read_text()
+    variants = mutations(source)
+    results = {}
+    with tempfile.TemporaryDirectory(prefix="ziren-claim-chain-") as temp:
+        root = Path(temp)
+        originals = {}
+        for name, content in variants.items():
+            target = root / f"{name}.lean"
+            target.write_text(content)
+            originals[name] = module_view(target, "AddSub_is_add")
+        old = originals["baseline"]
+        for name, content in variants.items():
+            new = originals[name]
+            weak, info = pin_v1.compare_module(old["manifest"], new["manifest"])
+            new_axioms = sorted(set(new["axioms"]) - set(old["axioms"]))
+            source_status, source_ports = source_v4.compare_sources(
+                source, content, "AddSub_is_add")
+            results[name] = {
+                "source": source_status,
+                "source_ports": source_ports,
+                "v1_weakening": weak,
+                "v1_information": info,
+                "new_axioms": new_axioms,
+            }
+
+    expected = {
+        "baseline": ("UNCHANGED", False),
+        "rel_disconnected": ("UNCHANGED", True),
+        "theorem_weakened": ("UNCHANGED", True),
+        "binder_disconnected": ("UNKNOWN", False),
+    }
+    for name, (source_status, v1_weakening) in expected.items():
+        observed = results[name]
+        if observed["source"] != source_status or bool(observed["v1_weakening"]) != v1_weakening:
+            raise AssertionError(f"{name}: {observed}")
+    if results["binder_disconnected"]["source_ports"] != ["state_send[3]"]:
+        raise AssertionError(results["binder_disconnected"])
+    if not any("definition rel changed" in item for item in
+               results["rel_disconnected"]["v1_weakening"]):
+        raise AssertionError(results["rel_disconnected"])
+    if not any("deterministic: conclusion changed" in item for item in
+               results["theorem_weakened"]["v1_weakening"]):
+        raise AssertionError(results["theorem_weakened"])
+    if not any("constraints changed" in item for item in
+               results["binder_disconnected"]["v1_information"]):
+        raise AssertionError(results["binder_disconnected"])
+    if any(case["new_axioms"] for case in results.values()):
+        raise AssertionError("unexpected new axiom in text mutation probe")
+    return results
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("addsub_lean", type=Path)
+    args = ap.parse_args()
+    print(json.dumps(experiment(args.addsub_lean), indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
