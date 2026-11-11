@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/mathgraph-syslinux-relation-gate.yml
       - research/mathgraph_syslinux_relation_separator.py
+      - research/MathGraphSysLinuxSmallComparison.lean
   workflow_dispatch:
 
 permissions:
@@ -100,6 +101,21 @@ jobs:
           use-github-cache: false
           use-mathlib-cache: true
 
+      - name: Kernel-check observer-sufficient compression theorem
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 180s lake env lean "$GITHUB_WORKSPACE/research/MathGraphSysLinuxSmallComparison.lean" \
+            > "$RUNNER_TEMP/small-comparison-lean.log" 2>&1 || {
+              rc=$?
+              tail -n 90 "$RUNNER_TEMP/small-comparison-lean.log"
+              exit "$rc"
+            }
+          grep -Fq MATHGRAPH_SYSLINUX_SMALL_SELECTOR_LEMMA_DONE "$RUNNER_TEMP/small-comparison-lean.log"
+          ! grep -Eq 'sorryAx|error:' "$RUNNER_TEMP/small-comparison-lean.log"
+          cat "$RUNNER_TEMP/small-comparison-lean.log"
+
       - name: Build the exact unchanged ZirenDet imports
         shell: bash
         run: |
@@ -154,6 +170,7 @@ jobs:
             ${{ runner.temp }}/syslinux-relation-certificate.json
             ${{ runner.temp }}/archived-lean.log
             ${{ runner.temp }}/current-lean.log
+            ${{ runner.temp }}/small-comparison-lean.log
             ${{ runner.temp }}/lean-witnesses/*.lean
             ${{ runner.temp }}/old-SysLinux.lean
             ${{ runner.temp }}/current/base/ZirenDet/Chips/SysLinux.lean
