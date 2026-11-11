@@ -231,7 +231,21 @@ def emit_lean_fixture(source, mod, v, ins, outs, dest, archived):
     assert 'def outputs (w : W)' in prefix
     assignments = ',\n    '.join(f'v{i} := {int(v[i])}' for i, _ in mod.fields)
     list_expr = lambda xs: '[' + ', '.join(str(x) for x in xs) + ']'
-    constraint_defs = ' '.join(f'constraints_{i}' for i in range(8 if archived else 9))
+    constraint_count = 8 if archived else 9
+    # The native source has already partitioned the relation into groups of
+    # <=50 conjuncts. `decide` on the entire unfolded module asks Lean's
+    # typeclass synthesizer to construct one enormous Decidable instance and
+    # fails before kernel reduction. Check each unchanged group separately.
+    constraint_lemmas = '\n\n'.join(
+        f'''private theorem mathGraphReadWitness_constraints_{i} :
+    constraints_{i} mathGraphReadWitness := by
+  unfold constraints_{i}
+  decide'''
+        for i in range(constraint_count)
+    )
+    constraint_proofs = ',\n    '.join(
+        f'mathGraphReadWitness_constraints_{i}' for i in range(constraint_count)
+    )
     appended = f'''
 
 /-! MathGraph exact-source full SysLinux read witness replay.
@@ -243,9 +257,11 @@ def mathGraphReadWitness : W := {{
     {assignments}
   }}
 
+{constraint_lemmas}
+
 theorem mathGraphReadWitness_constraints : constraints mathGraphReadWitness := by
-  unfold constraints {constraint_defs}
-  decide
+  unfold constraints
+  exact ⟨{constraint_proofs}⟩
 
 theorem mathGraphReadWitness_inputs : inputs mathGraphReadWitness = {list_expr(ins)} := by
   decide
