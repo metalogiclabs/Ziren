@@ -244,5 +244,11 @@ jobs:
             ${{ runner.temp }}/base-source.sha256
             ${{ runner.temp }}/base.log
             ${{ runner.temp }}/base/ZirenDet/Chips/KeccakSponge.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/Branch.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/Jump.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/Poseidon2Permute.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/StoreWord.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/SysLinux.lean
+            ${{ runner.temp }}/base/ZirenDet/Chips/SyscallInstrs.lean
             ${{ runner.temp }}/keccak-archive-compatibility.json
             ${{ runner.temp }}/native-addsub-replay.json
