@@ -1,0 +1,146 @@
+name: MathGraph Keccak proof alpha-transport (research only)
+
+on:
+  push:
+    branches:
+      - mathgraph/ziren-keccak-alpha-proof-transport
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout research wrapper
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/ziren-keccak-alpha-proof-transport
+          persist-credentials: false
+
+      - name: Checkout unchanged PR candidate source separately
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/addsub-port-provenance-regression
+          path: candidate
+          persist-credentials: false
+
+      - name: Pin both evidence authorities
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = 109e7b79851d99e93eeec9c18e0b44f147162084
+          git rev-parse HEAD
+          git -C candidate rev-parse HEAD
+
+      - name: Build pinned unchanged native extractor
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-09-17 --profile minimal
+          rustup override set nightly-2026-09-17
+          cargo build --locked --release -p zkm-picus
+
+      - name: Qualify and unpack immutable archived proof recipes
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz \
+            -o "$RUNNER_TEMP/ziren-fv-lean-20261001b.tar.gz"
+          printf '%s  %s\n' \
+            a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393 \
+            "$RUNNER_TEMP/ziren-fv-lean-20261001b.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/archive"
+          tar -xzf "$RUNNER_TEMP/ziren-fv-lean-20261001b.tar.gz" \
+            -C "$RUNNER_TEMP/archive" \
+            --wildcards \
+            'ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools/*' \
+            'ziren-fv-lean-20261001b/generated/KeccakSponge.lean'
+
+      - name: Generate one Keccak chip with original derive flags and no snippets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/empty"
+          cd candidate
+          PICUS_BUDGET_S=1800 PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 600s \
+            target/release/zkm-picus --chip KeccakSponge --format lean \
+            --derive --derive-diagnose --lean-out-dir "$RUNNER_TEMP/base" \
+            > "$RUNNER_TEMP/native-derive.log" 2>&1
+
+      - name: Require exact alpha-equivalence and regenerate the Keccak proof snippet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/snippets"
+          archive="$RUNNER_TEMP/archive/ziren-fv-lean-20261001b"
+          MATHGRAPH_CHECKER_DIR="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" \
+            timeout 180s python3 research/mathgraph_keccak_alpha_replay.py \
+            "$archive/generated/KeccakSponge.lean" \
+            "$RUNNER_TEMP/base/ZirenDet/Chips/KeccakSponge.lean" \
+            "$archive/src/crates/fv/lean4/snippets/tools/gen_keccak.py" \
+            "$RUNNER_TEMP/snippets/KeccakSponge.lean" \
+            > "$RUNNER_TEMP/alpha-certificate.json" \
+            2> "$RUNNER_TEMP/generator.log"
+          python3 -m json.tool "$RUNNER_TEMP/alpha-certificate.json"
+
+      - name: Regenerate Keccak proof body from source-bound snippet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/transport"
+          cd candidate
+          PICUS_BUDGET_S=1800 PICUS_SNIPPET_DIR="$RUNNER_TEMP/snippets" timeout 900s \
+            target/release/zkm-picus --chip KeccakSponge --format lean \
+            --derive --derive-diagnose --lean-out-dir "$RUNNER_TEMP/transport" \
+            > "$RUNNER_TEMP/transport.log" 2>&1
+
+      - name: Check translated theorem statements and record proof boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          MATHGRAPH_CHECKER_DIR="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" \
+            python3 - <<'PY'
+          import json, os, pathlib, sys
+          checker = pathlib.Path(os.environ['MATHGRAPH_CHECKER_DIR'])
+          sys.path.insert(0, str(checker))
+          import pin_statements as pin
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          before = pin.scan_file(root / 'base/ZirenDet/Chips/KeccakSponge.lean')[1]
+          after = pin.scan_file(root / 'transport/ZirenDet/Chips/KeccakSponge.lean')[1]
+          initial = next(m for m in before if m.namespace == 'KeccakSponge')
+          transported = next(m for m in after if m.namespace == 'KeccakSponge')
+          a, b = pin.summarize(initial), pin.summarize(transported)
+          assert a['hashes'] == b['hashes']
+          assert a['port_sources'] == b['port_sources']
+          assert a['theorems'] == b['theorems']
+          proof = (root / 'transport/ZirenDet/Chips/KeccakSponge.lean').read_text()
+          report = {
+              'source_and_transport_statements_match': True,
+              'source_and_transport_constraint_identity_match': True,
+              'transported_file_exists': True,
+              'transported_file_bytes': len(proof.encode()),
+              'lean_kernel_checked': False,
+          }
+          (root / 'transport-comparison.json').write_text(json.dumps(report, indent=2) + '\n')
+          print(json.dumps(report, indent=2))
+          PY
+
+      - name: Preserve isolated research evidence, including RED results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-keccak-alpha-transport-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/native-derive.log
+            ${{ runner.temp }}/generator.log
+            ${{ runner.temp }}/alpha-certificate.json
+            ${{ runner.temp }}/transport.log
+            ${{ runner.temp }}/transport-comparison.json
+            ${{ runner.temp }}/base/ZirenDet/Chips/KeccakSponge.lean
+            ${{ runner.temp }}/snippets/KeccakSponge.lean
+            ${{ runner.temp }}/transport/ZirenDet/Chips/KeccakSponge.lean
