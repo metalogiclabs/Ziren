@@ -117,6 +117,7 @@ jobs:
           }
           (out / 'base-source-bridge.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2))
+          PY
 
       - name: Replay meaning-bearing AddSub output mutations in freshly generated source
         shell: bash
@@ -190,7 +191,6 @@ jobs:
               'external consumer impact has not been established.')
           (temp / 'native-addsub-replay.json').write_text(json.dumps(results, indent=2) + '\n')
           print(json.dumps(results, indent=2))
-          PY
           PY
 
       - name: Preserve receipts even on an incomplete or failed gate
