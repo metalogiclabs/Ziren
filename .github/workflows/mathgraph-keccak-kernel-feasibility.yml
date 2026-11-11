@@ -1,0 +1,138 @@
+name: MathGraph Keccak Lean kernel feasibility (research only)
+
+on:
+  push:
+    branches:
+      - mathgraph/ziren-keccak-alpha-proof-transport
+    paths:
+      - .github/workflows/mathgraph-keccak-kernel-feasibility.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  bounded-kernel-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout research workflow
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/ziren-keccak-alpha-proof-transport
+          persist-credentials: false
+
+      - name: Checkout unchanged PR source
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/addsub-port-provenance-regression
+          path: candidate
+          persist-credentials: false
+
+      - name: Download source-qualified transported proof artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mathgraph-keccak-alpha-transport-42964707874
+          repository: metalogiclabs/Ziren
+          run-id: 42964707874
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: ${{ runner.temp }}/proof-artifact
+
+      - name: Qualify exact source and experiment input identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = 109e7b79851d99e93eeec9c18e0b44f147162084
+          printf '%s  %s\n' e86b6f5d9604bba3741cbfb5e7766626632db63fed27f2ea8c5e16debdada7ca \
+            "$RUNNER_TEMP/proof-artifact/base/ZirenDet/Chips/KeccakSponge.lean" | sha256sum -c
+          printf '%s  %s\n' bda12d86e8615b03f1079bc729e0c8805b5b3090487690cf71c75c8f77f03659 \
+            "$RUNNER_TEMP/proof-artifact/snippets/KeccakSponge.lean" | sha256sum -c
+          test "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["lean_kernel_checked"])' "$RUNNER_TEMP/proof-artifact/transport-comparison.json")" = False
+          sha256sum "$RUNNER_TEMP/proof-artifact/transport/ZirenDet/Chips/KeccakSponge.lean" | tee "$RUNNER_TEMP/transported-source.sha256"
+
+      - name: Split and normalize proof into dependency-ordered Lean modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 candidate/crates/fv/lean4/check/check.py --no-build \
+            "$RUNNER_TEMP/proof-artifact/transport/ZirenDet/Chips/KeccakSponge.lean" \
+            "$RUNNER_TEMP/split" SpKeccak | tee "$RUNNER_TEMP/split.log"
+          test -s "$RUNNER_TEMP/split/SpKeccak/P.lean"
+          test -s "$RUNNER_TEMP/split/SpKeccak/C000.lean"
+          test -s "$RUNNER_TEMP/split/inventory.json"
+          python3 - <<'PY'
+          import glob, json, os
+          from pathlib import Path
+          base = Path(os.environ['RUNNER_TEMP']) / 'split'
+          chunks = list((base / 'SpKeccak').glob('C*.lean'))
+          result = {'split_chunks': len(chunks), 'first_chunk': 'C000',
+                    'prelude_bytes': (base / 'SpKeccak/P.lean').stat().st_size,
+                    'full_closure': False, 'kernel_checked': False}
+          (base / 'feasibility.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(result)
+          PY
+
+      - name: Install pinned Lean and binary Mathlib dependencies
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: candidate/crates/fv/lean4
+          auto-config: false
+          use-github-cache: false
+          use-mathlib-cache: true
+
+      - name: Build unchanged Lean project dependency under budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 780s lake build ZirenDet > "$RUNNER_TEMP/lean-library.log" 2>&1 || {
+            result=$?
+            tail -n 80 "$RUNNER_TEMP/lean-library.log"
+            echo "Lean library build did not complete; code=$result" >&2
+            exit "$result"
+          }
+          tail -n 20 "$RUNNER_TEMP/lean-library.log"
+
+      - name: Check source prelude and first independent proof module with Lean
+        shell: bash
+        env:
+          JOBS: "1"
+          LEAN_THREADS: "1"
+          MIN_FREE: "1"
+          MOD_TIMEOUT: "540"
+        run: |
+          set -euo pipefail
+          export LEAN_PROJECT="$GITHUB_WORKSPACE/candidate/crates/fv/lean4"
+          for mod in P C000; do
+            echo "Checking $mod with Lean (bounded; not complete-chip closure)"
+            timeout 600s bash "$RUNNER_TEMP/split/run_mod.sh" SpKeccak "$mod"
+          done
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          base = Path(os.environ['RUNNER_TEMP']) / 'split'
+          data = json.loads((base / 'feasibility.json').read_text())
+          data['checked_module_names'] = ['P', 'C000']
+          data['kernel_checked'] = True
+          data['full_closure'] = False
+          (base / 'feasibility.json').write_text(json.dumps(data, indent=2) + '\n')
+          print(data)
+          PY
+
+      - name: Upload bounded results, including failures and UNKNOWNs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-keccak-kernel-feasibility-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/transported-source.sha256
+            ${{ runner.temp }}/split.log
+            ${{ runner.temp }}/lean-library.log
+            ${{ runner.temp }}/split/feasibility.json
+            ${{ runner.temp }}/split/inventory.json
+            ${{ runner.temp }}/split/progress.log
+            ${{ runner.temp }}/split/logs/P.out
+            ${{ runner.temp }}/split/logs/C000.out
