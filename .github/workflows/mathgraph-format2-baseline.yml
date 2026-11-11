@@ -17,14 +17,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: mathgraph/addsub-port-provenance-regression
-          fetch-depth: 3
+          fetch-depth: 4
           persist-credentials: false
 
       - name: Identify exact candidate and legacy ancestor
         run: |
           set -euo pipefail
           git rev-parse HEAD
-          test "$(git rev-parse HEAD~2)" = fcd3bbced39f2c26288bb505b9e89a828d8c3538
+          test "$(git rev-parse HEAD~3)" = fcd3bbced39f2c26288bb505b9e89a828d8c3538
           git rev-parse 'HEAD:crates/fv/lean4/statements.json'
 
       - name: Set up pinned Rust toolchain
@@ -65,7 +65,7 @@ jobs:
           out = pathlib.Path(os.environ['RUNNER_TEMP'])
           manifest = 'crates/fv/lean4/statements.json'
           legacy = json.loads(subprocess.check_output(
-              ['git', 'show', f'HEAD~2:{manifest}'], text=True))
+              ['git', 'show', f'HEAD~3:{manifest}'], text=True))
           candidate = json.loads(pathlib.Path(manifest).read_text())
           base = json.loads((out / 'base-format2.json').read_text())
           assert legacy['format'] == 'ziren-fv-statements/1'
@@ -105,7 +105,7 @@ jobs:
           report = {
               'candidate_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
               'candidate_blob_sha': subprocess.check_output(['git', 'rev-parse', f'HEAD:{manifest}'], text=True).strip(),
-              'legacy_ancestor': subprocess.check_output(['git', 'rev-parse', 'HEAD~2'], text=True).strip(),
+              'legacy_ancestor': subprocess.check_output(['git', 'rev-parse', 'HEAD~3'], text=True).strip(),
               'files_verified': len(candidate['files']),
               'modules_verified': len(candidate['modules']),
               'native_source_receipts_verified': source_matches,
@@ -183,12 +183,12 @@ jobs:
           assert results['field_binding_swap']['weakening_count'] >= 2
           assert sum('source-constrained field changed' in line for line in
                      results['field_binding_swap']['diagnostic']) >= 2
-          assert results['paired_positional_reorder']['weakening_count'] == 0
-          assert any('outputs reordered' in line for line in
+          assert results['paired_positional_reorder']['weakening_count'] >= 1
+          assert any('WEAKENING' in line and 'outputs reordered' in line for line in
                      results['paired_positional_reorder']['diagnostic'])
-          results['interpretation'] = ('The current guard catches moved source bindings but treats '
-              'a positional output-list reorder with matching origin labels as INFO; '
-              'external consumer impact has not been established.')
+          results['interpretation'] = ('The repaired guard requires review for both '
+              'changed source bindings and a positional output-list reorder with matching '
+              'origin labels; external consumer impact has not been established.')
           (temp / 'native-addsub-replay.json').write_text(json.dumps(results, indent=2) + '\n')
           print(json.dumps(results, indent=2))
           PY
