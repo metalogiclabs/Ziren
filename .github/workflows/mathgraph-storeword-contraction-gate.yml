@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/mathgraph-storeword-contraction-gate.yml
       - research/mathgraph_storeword_contraction_certificate.py
+      - research/mathgraph_target_contraction_certificate.py
       - research/MathGraphStoreWordContraction.lean
   workflow_dispatch:
 
@@ -48,6 +49,12 @@ jobs:
           printf '%s  %s\n' \
             e25f26e11dad54b31b88af0cfcf812a61c65d02bfdfeb76b5cc5c4d6640e5709 \
             "$RUNNER_TEMP/capture/base/ZirenDet/Chips/StoreWord.lean" | sha256sum --check
+          printf '%s  %s\n' \
+            1a6d3b3e3f23dfeb60cb4652ed74252f6d439e25202c6d760ae24b6f92552577 \
+            "$RUNNER_TEMP/capture/base/ZirenDet/Chips/Branch.lean" | sha256sum --check
+          printf '%s  %s\n' \
+            76e723d79ac0b25f67961d51b35f29b69cf7777327e71cf5e6fe0b4fd02c6b98 \
+            "$RUNNER_TEMP/capture/base/ZirenDet/Chips/Jump.lean" | sha256sum --check
 
       - name: Recover qualified archived old source
         shell: bash
@@ -65,6 +72,17 @@ jobs:
           printf '%s  %s\n' \
             f72848b9314fceca1790ba9ab9571d67262d73d14ed44e68d4b694a9ff76ccad \
             "$RUNNER_TEMP/old-StoreWord.lean" | sha256sum --check
+          for chip in Branch Jump; do
+            tar -xzOf "$RUNNER_TEMP/archive.tar.gz" \
+              "ziren-fv-lean-20261001b/generated/$chip.lean" \
+              > "$RUNNER_TEMP/old-$chip.lean"
+          done
+          printf '%s  %s\n' \
+            f782a7b91bd43fcd05c909a08fa6b1aa8961f26b6695dce152359d7a10e38063 \
+            "$RUNNER_TEMP/old-Branch.lean" | sha256sum --check
+          printf '%s  %s\n' \
+            1d7e6b03ab957d463d3f1c208b093cfb10bd7cf9ea90a0a97c7f612c01c9bfa2 \
+            "$RUNNER_TEMP/old-Jump.lean" | sha256sum --check
 
       - name: Certify full source substitution and reject two adversaries
         shell: bash
@@ -82,6 +100,30 @@ jobs:
           assert x['status']=='SOURCE_SUBSTITUTION_CERTIFIED_NOT_RELATIONAL_PROOF'
           assert sum(m['mapped_constraints'] for m in x['modules'].values())==180
           print('source-bound 180/180 and two negative controls PASS')
+          PY
+
+      - name: Certify nine Branch and Jump target contractions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for chip in Branch Jump; do
+            PYTHONPATH="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" \
+              python3 research/mathgraph_target_contraction_certificate.py \
+              --old "$RUNNER_TEMP/old-$chip.lean" \
+              --new "$RUNNER_TEMP/capture/base/ZirenDet/Chips/$chip.lean" \
+              > "$RUNNER_TEMP/$chip-contraction.json"
+          done
+          python3 - <<'PY'
+          import json, os, pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          branch=json.loads((root/'Branch-contraction.json').read_text())
+          jump=json.loads((root/'Jump-contraction.json').read_text())
+          assert len(branch['modules'])==7 and len(jump['modules'])==2
+          assert branch['total_constraints_matched']==530
+          assert jump['total_constraints_matched']==141
+          assert branch['removed_tautological_constraints']==28
+          assert jump['removed_tautological_constraints']==8
+          print('Nine additional contractions: 671 clauses matched; 36 identity rows removed')
           PY
 
       - name: Install pinned Lean and Mathlib
@@ -115,6 +157,12 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/storeword-source-certificate.json
+            ${{ runner.temp }}/Branch-contraction.json
+            ${{ runner.temp }}/Jump-contraction.json
             ${{ runner.temp }}/storeword-lean.log
             ${{ runner.temp }}/old-StoreWord.lean
+            ${{ runner.temp }}/old-Branch.lean
+            ${{ runner.temp }}/old-Jump.lean
             ${{ runner.temp }}/capture/base/ZirenDet/Chips/StoreWord.lean
+            ${{ runner.temp }}/capture/base/ZirenDet/Chips/Branch.lean
+            ${{ runner.temp }}/capture/base/ZirenDet/Chips/Jump.lean
