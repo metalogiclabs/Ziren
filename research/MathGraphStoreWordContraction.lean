@@ -40,4 +40,48 @@ theorem contract_sw_byte
     oldByte = baseByte :=
   (sub_eq_zero.mp hwrite).trans (sub_eq_zero.mp halias)
 
+/-!
+These two propositions explicitly eliminate one legacy existential field.
+The certificate separately confirms that all surrounding source constraints,
+ports and theorem signatures match after the same substitution.
+-/
+
+theorem sc_byte_rel_iff (baseByte outputByte : F) :
+    (∃ oldByte : F, oldByte - baseByte = 0 ∧ outputByte = oldByte) ↔
+    outputByte = baseByte := by
+  constructor
+  · rintro ⟨oldByte, hbase, hout⟩
+    exact hout.trans (sub_eq_zero.mp hbase)
+  · intro hout
+    exact ⟨baseByte, by ring, hout⟩
+
+theorem sw_byte_rel_iff (writeByte baseByte outputByte : F)
+    (hbase : writeByte - baseByte = 0) :
+    (∃ oldByte : F, oldByte - writeByte = 0 ∧ outputByte = oldByte) ↔
+    outputByte = baseByte := by
+  constructor
+  · rintro ⟨oldByte, hwrite, hout⟩
+    exact hout.trans ((sub_eq_zero.mp hwrite).trans (sub_eq_zero.mp hbase))
+  · intro hout
+    refine ⟨baseByte, ?_, hout⟩
+    calc
+      baseByte - writeByte = -(writeByte - baseByte) := by ring
+      _ = 0 := by rw [hbase]; ring
+
+theorem top_gate_rel_iff (sw sc writeByte baseByte : F)
+    (hsw : sw * (sw - 1) = 0) :
+    (∃ oldByte : F,
+        sw * (oldByte - writeByte) = 0 ∧
+        sc * (oldByte - baseByte) = 0 ∧
+        (sw * (sw + sc)) * (writeByte - baseByte) = 0) ↔
+    (sw * (baseByte - writeByte) = 0 ∧
+      (sw * (sw + sc)) * (writeByte - baseByte) = 0) := by
+  constructor
+  · rintro ⟨oldByte, hwrite, hread, halias⟩
+    exact ⟨contract_sw_gate sw sc oldByte writeByte baseByte hsw hwrite hread halias,
+           halias⟩
+  · rintro ⟨hnew, halias⟩
+    refine ⟨baseByte, hnew, ?_, halias⟩
+    ring
+
 end MathGraph.StoreWord
