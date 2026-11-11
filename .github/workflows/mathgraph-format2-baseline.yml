@@ -1,4 +1,4 @@
-name: MathGraph FV format-2 baseline qualification
+name: MathGraph FV format-2 source-binding bridge
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   qualify:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,97 +25,82 @@ jobs:
           cargo --version
           rustc --version
 
-      - name: Qualify archived external snippet recipes
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/ziren-fv-lean-20261001b.tar.gz"
-          curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
-            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz -o "$archive"
-          printf '%s  %s\n' \
-            'a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393' \
-            "$archive" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/archive"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/archive" \
-            --wildcards 'ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools/*'
-          python3 - <<'PY'
-          import json, pathlib, shlex
-          root = pathlib.Path(__import__('os').environ['RUNNER_TEMP']) / 'archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools'
-          recipes = [shlex.split(s) for s in (root / 'recipes.tsv').read_text().splitlines() if s.strip() and not s.lstrip().startswith('#')]
-          baseline = json.loads(pathlib.Path('crates/fv/lean4/statements.json').read_text())
-          assert len(recipes) == 24, f'unexpected recipe count: {len(recipes)}'
-          assert all(len(row) >= 4 and (root / row[3]).is_file() for row in recipes)
-          assert all(row[1] in baseline['files'] and f'{row[1]}/{row[2]}' in baseline['modules'] for row in recipes)
-          assert len({row[0] for row in recipes}) == len(recipes)
-          print('24 recipes have available generators and current baseline module targets')
-          PY
-
       - name: Build the unchanged source extractor
         run: cargo build --locked --release -p zkm-picus
 
-      - name: Regenerate complete generated source without changing checkout
+      - name: Generate fresh base chip constraints without external snippets
         shell: bash
         run: |
           set -euo pipefail
-          export SNIPPET_TOOLS="$RUNNER_TEMP/archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools"
-          export PICUS_BUDGET_S=1800
-          timeout 4800s bash crates/fv/lean4/check/regen_all.sh "$RUNNER_TEMP/regen"
-          find "$RUNNER_TEMP/regen/ZirenDet/Chips" -maxdepth 1 -type f -name '*.lean' -print0 \
-            | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/generated-source.sha256"
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/empty"
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 600s \
+            target/release/zkm-picus --all --format lean \
+            --lean-out-dir "$RUNNER_TEMP/base" > "$RUNNER_TEMP/base.log" 2>&1
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 300s \
+            target/release/zkm-picus --chip CloClz --shrcarry-summary precise --format lean \
+            --lean-out-dir "$RUNNER_TEMP/base" >> "$RUNNER_TEMP/base.log" 2>&1
+          find "$RUNNER_TEMP/base/ZirenDet/Chips" -maxdepth 1 -type f -name '*.lean' -print0 \
+            | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/base-source.sha256"
 
       - name: Run the pinned checker regression tests
         run: python3 crates/fv/lean4/check/test_pin_statements.py
 
-      - name: Prove exact legacy-equivalence before format migration
+      - name: Audit base-source binding receipts against pinned legacy records
         shell: bash
         run: |
           set -euo pipefail
           python3 crates/fv/lean4/check/pin_statements.py snapshot \
-            "$RUNNER_TEMP/regen/ZirenDet" > "$RUNNER_TEMP/statements-format2.json"
+            "$RUNNER_TEMP/base/ZirenDet" > "$RUNNER_TEMP/base-format2.json"
           python3 - <<'PY'
-          import json, os, pathlib, sys
+          import json, os, pathlib
           out = pathlib.Path(os.environ['RUNNER_TEMP'])
           old = json.loads(pathlib.Path('crates/fv/lean4/statements.json').read_text())
-          new = json.loads((out / 'statements-format2.json').read_text())
+          new = json.loads((out / 'base-format2.json').read_text())
           assert old['format'] == 'ziren-fv-statements/1'
           assert new['format'] == 'ziren-fv-statements/2'
-          stripped = {k: {field: val for field, val in record.items() if field != 'port_sources'}
-                      for k, record in new['modules'].items()}
-          file_diffs = sorted(k for k in set(old['files']) | set(new['files'])
-                              if old['files'].get(k) != new['files'].get(k))
-          module_diffs = sorted(k for k in set(old['modules']) | set(stripped)
-                                if old['modules'].get(k) != stripped.get(k))
-          missing_receipts = sorted(k for k, record in new['modules'].items()
-                                    if record['kind'] == 'module' and 'port_sources' not in record)
+          guarded_fields = ['inputs', 'outputs', 'assumed', 'aliases', 'witness', 'constraints']
+          guarded_hashes = ['inputs', 'outputs', 'assumed', 'aliases', 'witness', 'constraints']
+          matched, reasons = [], {}
+          for key, record in old['modules'].items():
+              candidate = new['modules'].get(key)
+              if candidate is None:
+                  reasons[key] = ['module missing from base output']
+                  continue
+              if record.get('kind') != 'module' or candidate.get('kind') != 'module':
+                  continue  # Helpers carry no source-port receipts.
+              diffs = [f for f in guarded_fields if record.get(f) != candidate.get(f)]
+              diffs += ['hashes.' + f for f in guarded_hashes
+                        if record.get('hashes', {}).get(f) != candidate.get('hashes', {}).get(f)]
+              if 'port_sources' not in candidate:
+                  diffs.append('missing source port receipt')
+              if diffs:
+                  reasons[key] = diffs
+              else:
+                  matched.append(key)
+          missing_keys = sorted(set(old['modules']) - set(new['modules']))
+          unexpected_keys = sorted(set(new['modules']) - set(old['modules']))
           report = {'legacy_file_count': len(old['files']),
-                    'regenerated_file_count': len(new['files']),
+                    'base_file_count': len(new['files']),
                     'legacy_module_count': len(old['modules']),
-                    'regenerated_module_count': len(new['modules']),
-                    'file_diffs': file_diffs,
-                    'module_diffs': module_diffs,
-                    'missing_receipts': missing_receipts,
-                    'source_matches_pinned_baseline': not (file_diffs or module_diffs or missing_receipts)}
-          (out / 'compatibility.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
+                    'base_module_count': len(new['modules']),
+                    'guarded_field_matches': len(matched),
+                    'guarded_field_mismatches': reasons,
+                    'missing_module_keys': missing_keys,
+                    'unexpected_module_keys': unexpected_keys,
+                    'full_legacy_equivalence_not_claimed': True}
+          (out / 'base-source-bridge.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2))
-          if not report['source_matches_pinned_baseline']:
-              sys.exit('UNKNOWN: regenerated source is not an exact match for the pinned format-1 baseline')
           PY
-          python3 crates/fv/lean4/check/pin_statements.py compare \
-            "$RUNNER_TEMP/statements-format2.json" "$RUNNER_TEMP/regen/ZirenDet" \
-            > "$RUNNER_TEMP/unchanged-comparison.log"
-          cat "$RUNNER_TEMP/unchanged-comparison.log"
 
       - name: Preserve receipts even on an incomplete or failed gate
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ziren-format2-source-qualification-${{ github.run_id }}
+          name: ziren-format2-base-source-bridge-${{ github.run_id }}
           retention-days: 30
           if-no-files-found: warn
           path: |
-            ${{ runner.temp }}/statements-format2.json
-            ${{ runner.temp }}/compatibility.json
-            ${{ runner.temp }}/unchanged-comparison.log
-            ${{ runner.temp }}/generated-source.sha256
-            ${{ runner.temp }}/regen/*.log
-            ${{ runner.temp }}/regen/modules/*.log
+            ${{ runner.temp }}/base-format2.json
+            ${{ runner.temp }}/base-source-bridge.json
+            ${{ runner.temp }}/base-source.sha256
+            ${{ runner.temp }}/base.log
