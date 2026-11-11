@@ -75,7 +75,9 @@ def main():
     ap.add_argument('--old',type=Path,required=True)
     ap.add_argument('--new',type=Path,required=True)
     args=ap.parse_args()
-    assert args.old.stem == args.new.stem in ('Branch','Jump')
+    chip = args.new.stem
+    assert chip in ('Branch', 'Jump')
+    assert args.old.stem in (chip, f'old-{chip}')
     old={m.namespace:m for m in scan_file(args.old)[1]}
     new={m.namespace:m for m in scan_file(args.new)[1]}
     assert old.keys() == new.keys()
@@ -83,10 +85,10 @@ def main():
     for name,a in old.items():
         if any(doc and doc.startswith('target_add_') for _,doc in a.fields):
             found[name]=qualify(a,new[name])
-    assert len(found)==(7 if args.old.stem=='Branch' else 2)
+    assert len(found)==(7 if chip=='Branch' else 2)
     result={
         'status':'SOURCE_SUBSTITUTION_CERTIFIED_NOT_EXISTENTIAL_EQUIVALENCE',
-        'chip':args.old.stem,
+        'chip':chip,
         'old_sha256':sha(args.old),'new_sha256':sha(args.new),
         'modules':found,
         'total_constraints_matched':sum(r['constraints_exact_after_contraction_and_tautology_removal'] for r in found.values()),
