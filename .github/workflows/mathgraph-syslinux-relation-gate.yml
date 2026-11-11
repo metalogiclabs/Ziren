@@ -100,6 +100,13 @@ jobs:
           use-github-cache: false
           use-mathlib-cache: true
 
+      - name: Build the exact unchanged ZirenDet imports
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 600s lake build ZirenDet.Basic ZirenDet.Replay ZirenDet.GadgetProofs
+
       - name: Kernel-check complete archived full-module witness
         shell: bash
         run: |
