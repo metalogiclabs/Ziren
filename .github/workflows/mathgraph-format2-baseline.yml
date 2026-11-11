@@ -51,6 +51,44 @@ jobs:
           find "$RUNNER_TEMP/base/ZirenDet/Chips" -maxdepth 1 -type f -name '*.lean' -print0 \
             | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/base-source.sha256"
 
+      - name: Diagnose Keccak archived-recipe input assumptions against native source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          path = root / 'base/ZirenDet/Chips/KeccakSponge.lean'
+          source = path.read_text()
+          def extract(name):
+              match = re.search(r'^def ' + name + r' \(w : W\) : List F :=\s*\n\s*\[([^\n]+)\]',
+                                source, re.M)
+              assert match, 'Cannot locate native port list: ' + name
+              return [int(n) for n in re.findall(r'w\.v(\d+)', match.group(1))]
+          inputs, outputs = extract('inputs'), extract('outputs')
+          expected_limb_cols = list(range(125, 225))
+          missing = [c for c in expected_limb_cols if c not in inputs]
+          origins_match = re.search(r'^def input_origins : List String := (\[[^\n]+\])',
+                                    source, re.M)
+          assert origins_match, 'Missing input origins on current source'
+          origins = json.loads(origins_match.group(1))
+          assert len(origins) == len(inputs)
+          report = {
+              'source_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'native_input_count': len(inputs), 'native_output_count': len(outputs),
+              'native_inputs_first_12': inputs[:12],
+              'native_outputs_first_12': outputs[:12],
+              'expected_archived_keccak_limb_count': len(expected_limb_cols),
+              'missing_archived_keccak_limb_columns': missing,
+              'first_port_mappings': list(zip(origins, inputs))[:12],
+              'source_has_archived_limb_columns': not missing,
+              'interpretation': 'Diagnostic only; generator and proof are unchanged.',
+          }
+          (root / 'keccak-archive-compatibility.json').write_text(
+              json.dumps(report, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(report, indent=2, sort_keys=True))
+          PY
+
       - name: Run the pinned checker regression tests
         run: python3 crates/fv/lean4/check/test_pin_statements.py
 
@@ -205,4 +243,5 @@ jobs:
             ${{ runner.temp }}/base-source-bridge.json
             ${{ runner.temp }}/base-source.sha256
             ${{ runner.temp }}/base.log
+            ${{ runner.temp }}/keccak-archive-compatibility.json
             ${{ runner.temp }}/native-addsub-replay.json
