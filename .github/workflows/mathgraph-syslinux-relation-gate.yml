@@ -1,0 +1,152 @@
+name: MathGraph SysLinux source-pinned relation separation (research only)
+
+on:
+  push:
+    branches:
+      - mathgraph/ziren-keccak-alpha-proof-transport
+    paths:
+      - .github/workflows/mathgraph-syslinux-relation-gate.yml
+      - research/mathgraph_syslinux_relation_separator.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  full-module-witnesses:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/ziren-keccak-alpha-proof-transport
+          persist-credentials: false
+
+      - name: Checkout unchanged PR candidate for toolchain and parser
+        uses: actions/checkout@v4
+        with:
+          repository: metalogiclabs/Ziren
+          ref: 109e7b79851d99e93eeec9c18e0b44f147162084
+          path: candidate
+          persist-credentials: false
+
+      - name: Recover exact current generated module
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = 109e7b79851d99e93eeec9c18e0b44f147162084
+          mkdir -p "$RUNNER_TEMP/current"
+          gh run download 42967401185 \
+            --repo metalogiclabs/Ziren \
+            --name ziren-format2-base-source-bridge-42967401185 \
+            --dir "$RUNNER_TEMP/current"
+          printf '%s  %s\n' \
+            a90426e05ba997ba3a01969e76d508bf711a50bd34dde447604c2c42da5760b2 \
+            "$RUNNER_TEMP/current/base/ZirenDet/Chips/SysLinux.lean" | sha256sum --check
+          printf '%s  %s\n' \
+            a315e6d82e07081b1696915276926846a88a0a631f78aebccbd79cee9244a8a0 \
+            candidate/crates/fv/lean4/ZirenDet/Lib.lean | sha256sum --check
+
+      - name: Recover SHA-qualified archived generated module
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz \
+            -o "$RUNNER_TEMP/archive.tar.gz"
+          printf '%s  %s\n' \
+            a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393 \
+            "$RUNNER_TEMP/archive.tar.gz" | sha256sum --check
+          tar -xzOf "$RUNNER_TEMP/archive.tar.gz" \
+            ziren-fv-lean-20261001b/generated/SysLinux.lean \
+            > "$RUNNER_TEMP/old-SysLinux.lean"
+          printf '%s  %s\n' \
+            efaf49f61345dff2e416b304e6aed7e099041e55c838aea7bd4971c9e287e690 \
+            "$RUNNER_TEMP/old-SysLinux.lean" | sha256sum --check
+
+      - name: Replay all source constraints, positive and negative controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" \
+            python3 research/mathgraph_syslinux_relation_separator.py \
+            --old "$RUNNER_TEMP/old-SysLinux.lean" \
+            --new "$RUNNER_TEMP/current/base/ZirenDet/Chips/SysLinux.lean" \
+            --lib candidate/crates/fv/lean4/ZirenDet/Lib.lean \
+            --emit-lean-dir "$RUNNER_TEMP/lean-witnesses" \
+            > "$RUNNER_TEMP/syslinux-relation-certificate.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'syslinux-relation-certificate.json'
+          c=json.loads(p.read_text())
+          assert c['old_constraints_checked']==352 and c['new_constraints_checked']==404
+          assert not c['old_constraint_failures'] and not c['new_constraint_failures']
+          assert c['benign_same_inputs_and_outputs']
+          assert c['same_public_inputs'] and c['different_public_outputs']
+          assert c['negative_archived_with_current_outputs_failed_row_count']>=1
+          assert c['negative_current_with_archived_outputs_failed_row_count']>=1
+          print('Source-pinned relation replay 352+404 and negative controls PASS')
+          PY
+
+      - name: Install pinned Lean and Mathlib
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: candidate/crates/fv/lean4
+          auto-config: false
+          use-github-cache: false
+          use-mathlib-cache: true
+
+      - name: Kernel-check complete archived full-module witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 600s lake env lean "$RUNNER_TEMP/lean-witnesses/MathGraphArchivedSysLinux.lean" \
+            > "$RUNNER_TEMP/archived-lean.log" 2>&1 || {
+              rc=$?
+              tail -n 90 "$RUNNER_TEMP/archived-lean.log"
+              exit "$rc"
+            }
+          grep -Fq MATHGRAPH_SYSLINUX_REL_WITNESS_DONE "$RUNNER_TEMP/archived-lean.log"
+          if grep -Eq 'sorryAx|error:' "$RUNNER_TEMP/archived-lean.log"; then
+            cat "$RUNNER_TEMP/archived-lean.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/archived-lean.log"
+
+      - name: Kernel-check complete current full-module witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 600s lake env lean "$RUNNER_TEMP/lean-witnesses/MathGraphCurrentSysLinux.lean" \
+            > "$RUNNER_TEMP/current-lean.log" 2>&1 || {
+              rc=$?
+              tail -n 90 "$RUNNER_TEMP/current-lean.log"
+              exit "$rc"
+            }
+          grep -Fq MATHGRAPH_SYSLINUX_REL_WITNESS_DONE "$RUNNER_TEMP/current-lean.log"
+          if grep -Eq 'sorryAx|error:' "$RUNNER_TEMP/current-lean.log"; then
+            cat "$RUNNER_TEMP/current-lean.log"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/current-lean.log"
+
+      - name: Preserve receipts and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-syslinux-relation-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/syslinux-relation-certificate.json
+            ${{ runner.temp }}/archived-lean.log
+            ${{ runner.temp }}/current-lean.log
+            ${{ runner.temp }}/lean-witnesses/*.lean
+            ${{ runner.temp }}/old-SysLinux.lean
+            ${{ runner.temp }}/current/base/ZirenDet/Chips/SysLinux.lean
