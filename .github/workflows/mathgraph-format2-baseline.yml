@@ -16,7 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: mathgraph/addsub-port-provenance-regression
+          fetch-depth: 2
           persist-credentials: false
+
+      - name: Identify exact candidate and legacy parent
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD^)" = fcd3bbced39f2c26288bb505b9e89a828d8c3538
+          git rev-parse 'HEAD:crates/fv/lean4/statements.json'
 
       - name: Set up pinned Rust toolchain
         run: |
@@ -45,49 +54,67 @@ jobs:
       - name: Run the pinned checker regression tests
         run: python3 crates/fv/lean4/check/test_pin_statements.py
 
-      - name: Audit base-source binding receipts against pinned legacy records
+      - name: Qualify committed format-2 baseline against unchanged base source and format-1 parent
         shell: bash
         run: |
           set -euo pipefail
           python3 crates/fv/lean4/check/pin_statements.py snapshot \
             "$RUNNER_TEMP/base/ZirenDet" > "$RUNNER_TEMP/base-format2.json"
           python3 - <<'PY'
-          import json, os, pathlib
+          import io, json, os, pathlib, subprocess, sys
           out = pathlib.Path(os.environ['RUNNER_TEMP'])
-          old = json.loads(pathlib.Path('crates/fv/lean4/statements.json').read_text())
-          new = json.loads((out / 'base-format2.json').read_text())
-          assert old['format'] == 'ziren-fv-statements/1'
-          assert new['format'] == 'ziren-fv-statements/2'
-          guarded_fields = ['inputs', 'outputs', 'assumed', 'aliases', 'witness', 'constraints']
-          guarded_hashes = ['inputs', 'outputs', 'assumed', 'aliases', 'witness', 'constraints']
-          matched, reasons = [], {}
-          for key, record in old['modules'].items():
-              candidate = new['modules'].get(key)
-              if candidate is None:
-                  reasons[key] = ['module missing from base output']
-                  continue
-              if record.get('kind') != 'module' or candidate.get('kind') != 'module':
-                  continue  # Helpers carry no source-port receipts.
-              diffs = [f for f in guarded_fields if record.get(f) != candidate.get(f)]
-              diffs += ['hashes.' + f for f in guarded_hashes
-                        if record.get('hashes', {}).get(f) != candidate.get('hashes', {}).get(f)]
-              if 'port_sources' not in candidate:
-                  diffs.append('missing source port receipt')
-              if diffs:
-                  reasons[key] = diffs
+          manifest = 'crates/fv/lean4/statements.json'
+          legacy = json.loads(subprocess.check_output(
+              ['git', 'show', f'HEAD^:{manifest}'], text=True))
+          candidate = json.loads(pathlib.Path(manifest).read_text())
+          base = json.loads((out / 'base-format2.json').read_text())
+          assert legacy['format'] == 'ziren-fv-statements/1'
+          assert candidate['format'] == base['format'] == 'ziren-fv-statements/2'
+          assert legacy['files'] == candidate['files'] == base['files']
+          assert legacy['modules'].keys() == candidate['modules'].keys() == base['modules'].keys()
+          assert len(candidate['files']) == 62 and len(candidate['modules']) == 155
+
+          def without(obj, keys):
+              return {k: v for k, v in obj.items() if k not in keys}
+
+          source_matches = 0
+          inventory_deltas = {'other_theorems': [], 'sections': []}
+          for key, previous in legacy['modules'].items():
+              current = candidate['modules'][key]
+              native = base['modules'][key]
+              # Every format-1 claim and its metadata must survive unchanged.
+              assert without(current, {'port_sources'}) == previous, key
+              if current['kind'] == 'module':
+                  source_matches += 1
+                  assert current['port_sources'] == native['port_sources'], key
               else:
-                  matched.append(key)
-          missing_keys = sorted(set(old['modules']) - set(new['modules']))
-          unexpected_keys = sorted(set(new['modules']) - set(old['modules']))
-          report = {'legacy_file_count': len(old['files']),
-                    'base_file_count': len(new['files']),
-                    'legacy_module_count': len(old['modules']),
-                    'base_module_count': len(new['modules']),
-                    'guarded_field_matches': len(matched),
-                    'guarded_field_mismatches': reasons,
-                    'missing_module_keys': missing_keys,
-                    'unexpected_module_keys': unexpected_keys,
-                    'full_legacy_equivalence_not_claimed': True}
+                  assert 'port_sources' not in current, key
+              # The source-only extractor cannot regenerate historical proof inventory.
+              for field in ('other_theorems', 'sections'):
+                  if current.get(field) != native.get(field):
+                      inventory_deltas[field].append(key)
+              assert without(current, {'other_theorems', 'sections'}) == without(
+                  native, {'other_theorems', 'sections'}), key
+          assert source_matches == 129
+
+          sys.path.insert(0, 'crates/fv/lean4/check')
+          import pin_statements as checker
+          diagnostic = io.StringIO()
+          weakening_count = checker.compare(candidate, base, out=diagnostic)
+          assert weakening_count == 0, diagnostic.getvalue()
+          report = {
+              'candidate_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'candidate_blob_sha': subprocess.check_output(['git', 'rev-parse', f'HEAD:{manifest}'], text=True).strip(),
+              'legacy_parent': subprocess.check_output(['git', 'rev-parse', 'HEAD^'], text=True).strip(),
+              'files_verified': len(candidate['files']),
+              'modules_verified': len(candidate['modules']),
+              'native_source_receipts_verified': source_matches,
+              'non_inventory_fields_identical': True,
+              'format1_fields_conserved': True,
+              'source_only_inventory_deltas': {k: len(v) for k, v in inventory_deltas.items()},
+              'compare_weakenings': weakening_count,
+              'proofs_not_regenerated_or_rechecked': True,
+          }
           (out / 'base-source-bridge.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2))
           PY
