@@ -231,6 +231,7 @@ def emit_lean_fixture(source, mod, v, ins, outs, dest, archived):
     assert 'def outputs (w : W)' in prefix
     assignments = ',\n    '.join(f'v{i} := {int(v[i])}' for i, _ in mod.fields)
     list_expr = lambda xs: '[' + ', '.join(str(x) for x in xs) + ']'
+    constraint_defs = ' '.join(f'constraints_{i}' for i in range(8 if archived else 9))
     appended = f'''
 
 /-! MathGraph exact-source full SysLinux read witness replay.
@@ -243,6 +244,7 @@ def mathGraphReadWitness : W := {{
   }}
 
 theorem mathGraphReadWitness_constraints : constraints mathGraphReadWitness := by
+  unfold constraints {constraint_defs}
   decide
 
 theorem mathGraphReadWitness_inputs : inputs mathGraphReadWitness = {list_expr(ins)} := by
