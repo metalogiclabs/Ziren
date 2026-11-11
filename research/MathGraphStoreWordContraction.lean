@@ -85,3 +85,50 @@ theorem top_gate_rel_iff (sw sc writeByte baseByte : F)
     ring
 
 end MathGraph.StoreWord
+
+/-!
+Branch/Jump research principle: a gate-equality permits replacement of a
+witness inside *any* gated expression over a field; a gated range argument is
+likewise unchanged. The source certificate independently identifies the
+relevant gated rows in all nine changed Branch/Jump modules.
+-/
+
+namespace MathGraph.TargetAlias
+
+variable {F : Type*} [Field F]
+
+theorem gated_substitution (gate oldTarget newTarget : F)
+    (hgate : gate * (oldTarget - newTarget) = 0)
+    (expression : F → F) :
+    gate * (expression oldTarget - expression newTarget) = 0 := by
+  rcases mul_eq_zero.mp hgate with hzero | htarget
+  · simp [hzero]
+  · have heq : oldTarget = newTarget := sub_eq_zero.mp htarget
+    rw [heq]
+    ring
+
+theorem unmask_gated_equality (selectorSum gate oldTarget newTarget : F)
+    (hselector : (selectorSum - 1) * gate = 0)
+    (hguarded : selectorSum * (gate * (oldTarget - newTarget)) = 0) :
+    gate * (oldTarget - newTarget) = 0 := by
+  calc
+    gate * (oldTarget - newTarget) =
+        selectorSum * (gate * (oldTarget - newTarget)) -
+        ((selectorSum - 1) * gate) * (oldTarget - newTarget) := by ring
+    _ = 0 := by rw [hguarded, hselector]; ring
+
+theorem gated_range_argument (gate oldTarget newTarget : F)
+    (hgate : gate * (oldTarget - newTarget) = 0) :
+    gate * oldTarget = gate * newTarget := by
+  calc
+    gate * oldTarget = gate * newTarget + gate * (oldTarget - newTarget) := by ring
+    _ = gate * newTarget := by rw [hgate]; ring
+
+theorem direct_substitution (oldTarget newTarget : F)
+    (heq : oldTarget - newTarget = 0)
+    (expression : F → F) :
+    expression oldTarget = expression newTarget := by
+  have h : oldTarget = newTarget := sub_eq_zero.mp heq
+  rw [h]
+
+end MathGraph.TargetAlias
