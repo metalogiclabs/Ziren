@@ -1,0 +1,139 @@
+name: MathGraph MemoryBump native Lean closure (research only)
+
+on:
+  push:
+    branches:
+      - mathgraph/ziren-keccak-alpha-proof-transport
+    paths:
+      - .github/workflows/mathgraph-memorybump-closure.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  full-small-chip-closure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout isolated research branch
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/ziren-keccak-alpha-proof-transport
+          persist-credentials: false
+
+      - name: Checkout unchanged PR source
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/addsub-port-provenance-regression
+          path: candidate
+          persist-credentials: false
+
+      - name: Build pinned native extractor
+        working-directory: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 109e7b79851d99e93eeec9c18e0b44f147162084
+          rustup toolchain install nightly-2026-09-17 --profile minimal
+          rustup override set nightly-2026-09-17
+          cargo build --locked --release -p zkm-picus
+
+      - name: Qualify immutable archive and regenerate unmodified MemoryBump proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz \
+            -o "$RUNNER_TEMP/ziren-archive.tar.gz"
+          printf '%s  %s\n' a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393 \
+            "$RUNNER_TEMP/ziren-archive.tar.gz" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/old" "$RUNNER_TEMP/native" "$RUNNER_TEMP/empty"
+          tar -xzOf "$RUNNER_TEMP/ziren-archive.tar.gz" \
+            ziren-fv-lean-20261001b/generated/MemoryBump.lean \
+            > "$RUNNER_TEMP/old/MemoryBump.lean"
+          cd candidate
+          PICUS_BUDGET_S=900 PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 300s \
+            target/release/zkm-picus --chip MemoryBump --format lean --derive \
+            --derive-diagnose --lean-out-dir "$RUNNER_TEMP/native" \
+            > "$RUNNER_TEMP/extract.log" 2>&1
+
+      - name: Fail closed on current-vs-archived statement and port drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          MATHGRAPH_CHECKER_DIR="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" python3 - <<'PY'
+          import hashlib, json, os, pathlib, sys
+          sys.path.insert(0, os.environ['MATHGRAPH_CHECKER_DIR'])
+          import pin_statements as pin
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          old = root / 'old/MemoryBump.lean'
+          new = root / 'native/ZirenDet/Chips/MemoryBump.lean'
+          old_modules, new_modules = pin.scan_file(old)[1], pin.scan_file(new)[1]
+          assert len(old_modules) == len(new_modules) == 1
+          a, b = pin.summarize(old_modules[0]), pin.summarize(new_modules[0])
+          for field in ('hashes', 'port_sources', 'theorems'):
+              assert a[field] == b[field], field
+          result = {'chip': 'MemoryBump', 'old_source_sha256': hashlib.sha256(old.read_bytes()).hexdigest(),
+                    'new_source_sha256': hashlib.sha256(new.read_bytes()).hexdigest(),
+                    'theorem_statements_and_source_bound_ports_match': True, 'lean_kernel_closed': False}
+          (root / 'memorybump-source-certificate.json').write_text(json.dumps(result, indent=2) + '\n')
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Set up exact Lean and Mathlib toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: candidate/crates/fv/lean4
+          auto-config: false
+          use-github-cache: false
+          use-mathlib-cache: true
+
+      - name: Run complete fail-closed owner checker on MemoryBump
+        shell: bash
+        env:
+          JOBS: '1'
+          LEAN_THREADS: '1'
+          MIN_FREE: '1'
+          MOD_TIMEOUT: '600'
+        run: |
+          set -euo pipefail
+          export LEAN_PROJECT="$GITHUB_WORKSPACE/candidate/crates/fv/lean4"
+          timeout 1200s python3 candidate/crates/fv/lean4/check/check.py \
+            "$RUNNER_TEMP/native/ZirenDet/Chips/MemoryBump.lean" \
+            "$RUNNER_TEMP/closure" SpMemoryBump \
+            > "$RUNNER_TEMP/closure-run.log" 2>&1 || {
+              result=$?
+              tail -n 90 "$RUNNER_TEMP/closure-run.log"
+              echo "No closure accepted; code=$result" >&2
+              exit "$result"
+            }
+          test -s "$RUNNER_TEMP/closure/closure.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])
+          cert=json.loads((root/'memorybump-source-certificate.json').read_text())
+          result=json.loads((root/'closure/closure.json').read_text())
+          assert result.get('source_sha256') == cert['new_source_sha256']
+          cert['lean_kernel_closed']=True
+          cert['closure_receipt']=result
+          (root/'memorybump-source-certificate.json').write_text(json.dumps(cert, indent=2)+'\n')
+          print('MemoryBump complete source-pinned Lean closure: PASS')
+          PY
+
+      - name: Preserve both successes and failures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-memorybump-closure-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/extract.log
+            ${{ runner.temp }}/closure-run.log
+            ${{ runner.temp }}/memorybump-source-certificate.json
+            ${{ runner.temp }}/native/ZirenDet/Chips/MemoryBump.lean
+            ${{ runner.temp }}/closure/progress.log
+            ${{ runner.temp }}/closure/inventory.json
+            ${{ runner.temp }}/closure/closure.json
+            ${{ runner.temp }}/closure/logs/*.out
