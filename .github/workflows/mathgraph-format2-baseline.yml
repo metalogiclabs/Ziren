@@ -243,5 +243,6 @@ jobs:
             ${{ runner.temp }}/base-source-bridge.json
             ${{ runner.temp }}/base-source.sha256
             ${{ runner.temp }}/base.log
+            ${{ runner.temp }}/base/ZirenDet/Chips/KeccakSponge.lean
             ${{ runner.temp }}/keccak-archive-compatibility.json
             ${{ runner.temp }}/native-addsub-replay.json
