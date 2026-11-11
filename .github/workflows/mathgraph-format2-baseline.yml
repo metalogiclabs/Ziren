@@ -117,6 +117,80 @@ jobs:
           }
           (out / 'base-source-bridge.json').write_text(json.dumps(report, indent=2, sort_keys=True) + '\n')
           print(json.dumps(report, indent=2))
+
+      - name: Replay meaning-bearing AddSub output mutations in freshly generated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import io, json, os, pathlib, re, shutil, sys
+          sys.path.insert(0, 'crates/fv/lean4/check')
+          import pin_statements as checker
+          temp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          original_dir = temp / 'base' / 'ZirenDet'
+          chip = original_dir / 'Chips' / 'AddSub.lean'
+          full = chip.read_text()
+          lead, sep, rest = full.partition('namespace AddSub_is_add\n')
+          assert sep, 'unchanged AddSub module not found'
+          module, end, tail = rest.partition('\nend AddSub_is_add')
+          assert end, 'AddSub module end not found'
+
+          output_pattern = re.compile(r'(def outputs \(w : W\) : List F :=\s*\n\s*)\[([^\]\n]+)\]')
+          origins_pattern = re.compile(r'def output_origins : List String := (\[[^\n]+\])')
+          output_match = output_pattern.search(module)
+          origins_match = origins_pattern.search(module)
+          assert output_match and origins_match
+          original_values = [part.strip() for part in output_match.group(2).split(',')]
+          original_labels = json.loads(origins_match.group(1))
+          assert len(original_values) == len(original_labels) >= 4
+          assert [original_labels[i] for i in (1, 3)] == ['state_send[1]', 'state_send[3]']
+
+          pinned = json.loads(pathlib.Path('crates/fv/lean4/statements.json').read_text())
+          native = checker.snapshot(original_dir)
+          assert checker.compare(pinned, native, out=io.StringIO()) == 0
+          record = pinned['modules']['AddSub/AddSub_is_add']
+          source_map = dict(record['port_sources']['bindings']['outputs'])
+          assert source_map['state_send[1]'] != source_map['state_send[3]']
+
+          def mutate(reorder_labels):
+              vals = original_values.copy()
+              vals[1], vals[3] = vals[3], vals[1]
+              changed = output_pattern.sub(
+                  lambda match: match.group(1) + '[' + ', '.join(vals) + ']',
+                  module, count=1)
+              if reorder_labels:
+                  labels = original_labels.copy()
+                  labels[1], labels[3] = labels[3], labels[1]
+                  changed = origins_pattern.sub(
+                      lambda match: 'def output_origins : List String := ' + json.dumps(labels),
+                      changed, count=1)
+              return lead + sep + changed + end + tail
+
+          results = {}
+          for name, reorder_labels in (('field_binding_swap', False), ('paired_positional_reorder', True)):
+              target = temp / ('replay-' + name) / 'ZirenDet'
+              shutil.copytree(original_dir, target)
+              (target / 'Chips' / 'AddSub.lean').write_text(mutate(reorder_labels))
+              output = io.StringIO()
+              changes = checker.compare(pinned, checker.snapshot(target), out=output)
+              report = output.getvalue()
+              results[name] = {
+                  'weakening_count': changes,
+                  'diagnostic': [line for line in report.splitlines()
+                                 if 'AddSub/AddSub_is_add' in line],
+              }
+          assert results['field_binding_swap']['weakening_count'] >= 2
+          assert sum('source-constrained field changed' in line for line in
+                     results['field_binding_swap']['diagnostic']) >= 2
+          assert results['paired_positional_reorder']['weakening_count'] == 0
+          assert any('outputs reordered' in line for line in
+                     results['paired_positional_reorder']['diagnostic'])
+          results['interpretation'] = ('The current guard catches moved source bindings but treats '
+              'a positional output-list reorder with matching origin labels as INFO; '
+              'external consumer impact has not been established.')
+          (temp / 'native-addsub-replay.json').write_text(json.dumps(results, indent=2) + '\n')
+          print(json.dumps(results, indent=2))
+          PY
           PY
 
       - name: Preserve receipts even on an incomplete or failed gate
@@ -131,3 +205,4 @@ jobs:
             ${{ runner.temp }}/base-source-bridge.json
             ${{ runner.temp }}/base-source.sha256
             ${{ runner.temp }}/base.log
+            ${{ runner.temp }}/native-addsub-replay.json
