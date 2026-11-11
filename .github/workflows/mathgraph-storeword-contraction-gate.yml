@@ -1,0 +1,120 @@
+name: MathGraph StoreWord contraction source and algebra gate (research only)
+
+on:
+  push:
+    branches:
+      - mathgraph/ziren-keccak-alpha-proof-transport
+    paths:
+      - .github/workflows/mathgraph-storeword-contraction-gate.yml
+      - research/mathgraph_storeword_contraction_certificate.py
+      - research/MathGraphStoreWordContraction.lean
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  source-and-algebra:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout isolated research code
+        uses: actions/checkout@v4
+        with:
+          ref: mathgraph/ziren-keccak-alpha-proof-transport
+          persist-credentials: false
+
+      - name: Checkout exact unchanged candidate for parser and Lean toolchain
+        uses: actions/checkout@v4
+        with:
+          repository: metalogiclabs/Ziren
+          ref: 109e7b79851d99e93eeec9c18e0b44f147162084
+          path: candidate
+          persist-credentials: false
+
+      - name: Recover exact prior native current source, fail-closed on hash
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = 109e7b79851d99e93eeec9c18e0b44f147162084
+          mkdir -p "$RUNNER_TEMP/capture"
+          gh run download 42967401185 \
+            --repo metalogiclabs/Ziren \
+            --name ziren-format2-base-source-bridge-42967401185 \
+            --dir "$RUNNER_TEMP/capture"
+          printf '%s  %s\n' \
+            e25f26e11dad54b31b88af0cfcf812a61c65d02bfdfeb76b5cc5c4d6640e5709 \
+            "$RUNNER_TEMP/capture/base/ZirenDet/Chips/StoreWord.lean" | sha256sum --check
+
+      - name: Recover qualified archived old source
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 2 --connect-timeout 20 --max-time 240 \
+            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz \
+            -o "$RUNNER_TEMP/archive.tar.gz"
+          printf '%s  %s\n' \
+            a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393 \
+            "$RUNNER_TEMP/archive.tar.gz" | sha256sum --check
+          tar -xzOf "$RUNNER_TEMP/archive.tar.gz" \
+            ziren-fv-lean-20261001b/generated/StoreWord.lean \
+            > "$RUNNER_TEMP/old-StoreWord.lean"
+          printf '%s  %s\n' \
+            f72848b9314fceca1790ba9ab9571d67262d73d14ed44e68d4b694a9ff76ccad \
+            "$RUNNER_TEMP/old-StoreWord.lean" | sha256sum --check
+
+      - name: Certify full source substitution and reject two adversaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$GITHUB_WORKSPACE/candidate/crates/fv/lean4/check" \
+            python3 research/mathgraph_storeword_contraction_certificate.py \
+            --old "$RUNNER_TEMP/old-StoreWord.lean" \
+            --new "$RUNNER_TEMP/capture/base/ZirenDet/Chips/StoreWord.lean" \
+            > "$RUNNER_TEMP/storeword-source-certificate.json"
+          python3 - <<'PY'
+          import json, os, pathlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'storeword-source-certificate.json'
+          x=json.loads(p.read_text())
+          assert x['status']=='SOURCE_SUBSTITUTION_CERTIFIED_NOT_RELATIONAL_PROOF'
+          assert sum(m['mapped_constraints'] for m in x['modules'].values())==180
+          print('source-bound 180/180 and two negative controls PASS')
+          PY
+
+      - name: Install pinned Lean and Mathlib
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: candidate/crates/fv/lean4
+          auto-config: false
+          use-github-cache: false
+          use-mathlib-cache: true
+
+      - name: Kernel-check universal gate contraction over commutative rings
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate/crates/fv/lean4
+          timeout 300s lake env lean "$GITHUB_WORKSPACE/research/MathGraphStoreWordContraction.lean" \
+            > "$RUNNER_TEMP/storeword-lean.log" 2>&1 || {
+              rc=$?
+              tail -n 90 "$RUNNER_TEMP/storeword-lean.log"
+              exit "$rc"
+            }
+          test ! -s "$RUNNER_TEMP/storeword-lean.log"
+          echo 'Universal commutative-ring gate lemma kernel-checked: PASS'
+
+      - name: Preserve receipts, even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-storeword-contraction-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/storeword-source-certificate.json
+            ${{ runner.temp }}/storeword-lean.log
+            ${{ runner.temp }}/old-StoreWord.lean
+            ${{ runner.temp }}/capture/base/ZirenDet/Chips/StoreWord.lean
