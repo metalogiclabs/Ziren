@@ -1,0 +1,99 @@
+name: MathGraph archived generator compatibility probe
+
+on:
+  push:
+    branches:
+      - research/ziren-archive-snippet-probe-20261117
+
+permissions:
+  contents: read
+
+jobs:
+  archive-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+
+      - name: Build unchanged source extractor
+        run: cargo build --locked --release -p zkm-picus
+
+      - name: Acquire and pin historical proof generators
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --retry 2 \
+            https://zkm-toolchain.s3.amazonaws.com/fv/ziren-fv-lean-20261001b.tar.gz \
+            --output "$RUNNER_TEMP/source-archive.tar.gz"
+          echo "a2ade9f757ee2b8cf3104bafcee836ef5554648e2f25cdf8e3f0289d533e6393  $RUNNER_TEMP/source-archive.tar.gz" \
+            | sha256sum --check --status
+          mkdir -p "$RUNNER_TEMP/archive"
+          tar -xzf "$RUNNER_TEMP/source-archive.tar.gz" -C "$RUNNER_TEMP/archive" \
+            ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools
+          test -f "$RUNNER_TEMP/archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools/gen_fpop.py"
+
+      - name: Regenerate one current base chip and split exact module
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/empty" "$RUNNER_TEMP/split"
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 180s \
+            target/release/zkm-picus --chip Bn254FpOpAssign --format lean \
+            --lean-out-dir "$RUNNER_TEMP/base" > "$RUNNER_TEMP/base.log" 2>&1
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          temp = Path(os.environ['RUNNER_TEMP'])
+          source = temp / 'base/ZirenDet/Chips/Bn254FpOpAssign.lean'
+          lines = source.read_text().split('\n')
+          namespace = 'Bn254FpOpAssign_is_add'
+          outer = next(i for i, line in enumerate(lines)
+                       if line.startswith('namespace ZirenDet.Chips.'))
+          start = lines.index(f'namespace {namespace}')
+          end = next(i for i in range(start, len(lines)) if lines[i] == f'end {namespace}')
+          close = [line for line in lines if line.startswith('end ZirenDet.Chips.')]
+          assert len(close) == 1 and end > start
+          output = temp / 'split/Bn254FpOpAssign_is_add.lean'
+          output.write_text('\n'.join(lines[:outer+1] + [''] + lines[start:end+1] + [''] + close) + '\n')
+          print('MATHGRAPH_CURRENT_MODULE', len(lines), end-start+1, output.stat().st_size)
+          PY
+
+      - name: Test archived generator against current chip and splice snippet
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/snippets" "$RUNNER_TEMP/derived"
+          tooling="$RUNNER_TEMP/archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools"
+          (cd "$tooling" && timeout 180s python3 gen_fpop.py \
+            "$RUNNER_TEMP/split/Bn254FpOpAssign_is_add.lean" \
+            "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean") \
+            > "$RUNNER_TEMP/generator.log" 2>&1
+          test -s "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
+          rg -q 'theorem gadget_det' "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/snippets" PICUS_BUDGET_S=180 timeout 260s \
+            target/release/zkm-picus --chip Bn254FpOpAssign --format lean \
+            --derive --derive-diagnose --lean-out-dir "$RUNNER_TEMP/derived" \
+            > "$RUNNER_TEMP/derived.log" 2>&1
+          test -s "$RUNNER_TEMP/derived/ZirenDet/Chips/Bn254FpOpAssign.lean"
+          sha256sum "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean" \
+            "$RUNNER_TEMP/derived/ZirenDet/Chips/Bn254FpOpAssign.lean" \
+            > "$RUNNER_TEMP/generated.sha256"
+          echo 'MATHGRAPH_ARCHIVE_GENERATOR_AND_DERIVE_OK'
+
+      - name: Archive exact compatibility evidence (including failed experiments)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-ziren-archive-snippet-probe
+          path: |
+            ${{ runner.temp }}/base.log
+            ${{ runner.temp }}/generator.log
+            ${{ runner.temp }}/derived.log
+            ${{ runner.temp }}/generated.sha256
+            ${{ runner.temp }}/split/Bn254FpOpAssign_is_add.lean
+            ${{ runner.temp }}/snippets/Bn254FpOpAssign_is_add.lean
+            ${{ runner.temp }}/derived/ZirenDet/Chips/Bn254FpOpAssign.lean
+          retention-days: 30
