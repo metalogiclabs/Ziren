@@ -35,7 +35,7 @@ jobs:
             ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools
           test -f "$RUNNER_TEMP/archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools/gen_fpop.py"
 
-      - name: Regenerate one current base chip and split exact module
+      - name: Regenerate one current base chip and split both exact operation modules
         shell: bash
         run: |
           set -euo pipefail
@@ -49,36 +49,46 @@ jobs:
           temp = Path(os.environ['RUNNER_TEMP'])
           source = temp / 'base/ZirenDet/Chips/Bn254FpOpAssign.lean'
           lines = source.read_text().split('\n')
-          namespace = 'Bn254FpOpAssign_is_add'
           outer = next(i for i, line in enumerate(lines)
                        if line.startswith('namespace ZirenDet.Chips.'))
-          start = lines.index(f'namespace {namespace}')
-          end = next(i for i in range(start, len(lines)) if lines[i] == f'end {namespace}')
           close = [line for line in lines if line.startswith('end ZirenDet.Chips.')]
-          assert len(close) == 1 and end > start
-          output = temp / 'split/Bn254FpOpAssign_is_add.lean'
-          output.write_text('\n'.join(lines[:outer+1] + [''] + lines[start:end+1] + [''] + close) + '\n')
-          print('MATHGRAPH_CURRENT_MODULE', len(lines), end-start+1, output.stat().st_size)
+          assert len(close) == 1
+          for operation in ('add', 'mul'):
+              namespace = f'Bn254FpOpAssign_is_{operation}'
+              start = lines.index(f'namespace {namespace}')
+              end = next(i for i in range(start, len(lines)) if lines[i] == f'end {namespace}')
+              assert end > start
+              output = temp / f'split/{namespace}.lean'
+              output.write_text('\n'.join(lines[:outer+1] + [''] + lines[start:end+1] + [''] + close) + '\n')
+              print('MATHGRAPH_CURRENT_MODULE', namespace, len(lines), end-start+1, output.stat().st_size)
           PY
 
-      - name: Test archived generator against current chip and splice snippet
+      - name: Test archived generator against current chip and splice both snippets
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/snippets" "$RUNNER_TEMP/derived"
           tooling="$RUNNER_TEMP/archive/ziren-fv-lean-20261001b/src/crates/fv/lean4/snippets/tools"
-          (cd "$tooling" && timeout 180s python3 gen_fpop.py \
-            "$RUNNER_TEMP/split/Bn254FpOpAssign_is_add.lean" \
-            "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean") \
-            > "$RUNNER_TEMP/generator.log" 2>&1
-          test -s "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
-          grep -q 'theorem gadget_det' "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
+          for operation in add mul; do
+            (cd "$tooling" && timeout 180s python3 gen_fpop.py \
+              "$RUNNER_TEMP/split/Bn254FpOpAssign_is_${operation}.lean" \
+              "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_${operation}.lean") \
+              >> "$RUNNER_TEMP/generator.log" 2>&1
+            test -s "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_${operation}.lean"
+            grep -q 'theorem gadget_det' "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_${operation}.lean"
+          done
+          echo "34eb3d63c4e426304a15fad015f717d8a6323dc9c5e49a092b2d8f5cb57fe541  $RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean" \
+            | sha256sum --check --status
+          echo "e2cc5f0e0c76dcc65cd7d9439bc05da29f0f274c1f9e82db8ad9b76f6599341d  $RUNNER_TEMP/snippets/Bn254FpOpAssign_is_mul.lean" \
+            | sha256sum --check --status
           PICUS_SNIPPET_DIR="$RUNNER_TEMP/snippets" PICUS_BUDGET_S=180 timeout 260s \
             target/release/zkm-picus --chip Bn254FpOpAssign --format lean \
             --derive --derive-diagnose --lean-out-dir "$RUNNER_TEMP/derived" \
             > "$RUNNER_TEMP/derived.log" 2>&1
           test -s "$RUNNER_TEMP/derived/ZirenDet/Chips/Bn254FpOpAssign.lean"
+          test "$(grep -c '^theorem gadget_det' "$RUNNER_TEMP/derived/ZirenDet/Chips/Bn254FpOpAssign.lean")" -eq 2
           sha256sum "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean" \
+            "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_mul.lean" \
             "$RUNNER_TEMP/derived/ZirenDet/Chips/Bn254FpOpAssign.lean" \
             > "$RUNNER_TEMP/generated.sha256"
           echo 'MATHGRAPH_ARCHIVE_GENERATOR_AND_DERIVE_OK'
@@ -94,6 +104,8 @@ jobs:
             ${{ runner.temp }}/derived.log
             ${{ runner.temp }}/generated.sha256
             ${{ runner.temp }}/split/Bn254FpOpAssign_is_add.lean
+            ${{ runner.temp }}/split/Bn254FpOpAssign_is_mul.lean
             ${{ runner.temp }}/snippets/Bn254FpOpAssign_is_add.lean
+            ${{ runner.temp }}/snippets/Bn254FpOpAssign_is_mul.lean
             ${{ runner.temp }}/derived/ZirenDet/Chips/Bn254FpOpAssign.lean
           retention-days: 30
