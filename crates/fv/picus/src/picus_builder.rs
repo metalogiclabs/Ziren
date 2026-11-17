@@ -32,6 +32,7 @@
 //! instruction chip carries its own frame, so a chip module is self-contained.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use p3_air::symbolic::{BaseEntry, BaseLeaf, SymbolicExpression, SymbolicVariable};
 use p3_air::{Air, AirBuilder, BaseAir};
@@ -194,6 +195,29 @@ enum Port {
     Output,
 }
 
+/// One attempted interface binding, including roles elided by port deduplication.
+/// These events are diagnostic metadata; they are not assumptions of determinism.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortOriginAttempt {
+    pub expression: String,
+    pub variable_id: Option<usize>,
+    pub origin: String,
+    pub retained: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ModulePortOriginAudit {
+    pub input_attempts: Vec<PortOriginAttempt>,
+    pub output_attempts: Vec<PortOriginAttempt>,
+}
+
+/// Opt in before extracting a chip. The disabled path does not collect attempt metadata.
+pub static PORT_ORIGIN_AUDIT_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Per-module source attempts, independently of the deduplicated `PORT_ORIGINS` labels.
+pub static PORT_ORIGIN_ATTEMPTS: std::sync::Mutex<BTreeMap<String, ModulePortOriginAudit>> =
+    std::sync::Mutex::new(BTreeMap::new());
+
 /// Turns one recorded evaluation into a [`PicusModule`] under a specialization environment.
 /// Chips that compute a syscall's result from its arguments (see
 /// `Emitter::handle_syscall_result`).
@@ -241,6 +265,9 @@ struct Emitter<'a> {
     /// the order of `module.inputs` / `module.outputs`; consumed by the Lean backend.
     input_origins: Vec<String>,
     output_origins: Vec<String>,
+    record_origin_attempts: bool,
+    input_attempts: Vec<PortOriginAttempt>,
+    output_attempts: Vec<PortOriginAttempt>,
     mem_reads: usize,
     mem_writes: usize,
 }
@@ -264,15 +291,37 @@ impl<'a> Emitter<'a> {
 
     fn push_port_from(&mut self, port: Port, expr: PicusExpr, origin: &str) {
         let key = expr.to_string();
+        let variable_id = match &expr {
+            PicusExpr::Var(id) => Some(*id),
+            _ => None,
+        };
         match port {
             Port::Input => {
-                if self.inputs_seen.insert(key) {
+                let retained = self.inputs_seen.insert(key.clone());
+                if self.record_origin_attempts {
+                    self.input_attempts.push(PortOriginAttempt {
+                        expression: key,
+                        variable_id,
+                        origin: origin.to_string(),
+                        retained,
+                    });
+                }
+                if retained {
                     self.module.inputs.push(expr);
                     self.input_origins.push(origin.to_string());
                 }
             }
             Port::Output => {
-                if self.outputs_seen.insert(key) {
+                let retained = self.outputs_seen.insert(key.clone());
+                if self.record_origin_attempts {
+                    self.output_attempts.push(PortOriginAttempt {
+                        expression: key,
+                        variable_id,
+                        origin: origin.to_string(),
+                        retained,
+                    });
+                }
+                if retained {
                     self.module.outputs.push(expr);
                     self.output_origins.push(origin.to_string());
                 }
@@ -843,6 +892,9 @@ where
         outputs_seen: BTreeSet::new(),
         input_origins: Vec::new(),
         output_origins: Vec::new(),
+        record_origin_attempts: PORT_ORIGIN_AUDIT_ENABLED.load(Ordering::Relaxed),
+        input_attempts: Vec::new(),
+        output_attempts: Vec::new(),
         mem_reads: 0,
         mem_writes: 0,
     };
@@ -932,6 +984,15 @@ where
         .lock()
         .unwrap()
         .insert(em.module.name.clone(), (em.input_origins.clone(), em.output_origins.clone()));
+    if em.record_origin_attempts {
+        PORT_ORIGIN_ATTEMPTS.lock().unwrap().insert(
+            em.module.name.clone(),
+            ModulePortOriginAudit {
+                input_attempts: std::mem::take(&mut em.input_attempts),
+                output_attempts: std::mem::take(&mut em.output_attempts),
+            },
+        );
+    }
     let marks = gadgets
         .into_iter()
         .map(|(gadget, gate, operands)| GadgetMark {
