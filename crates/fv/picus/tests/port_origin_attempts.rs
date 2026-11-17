@@ -108,6 +108,10 @@ fn check_direction(
     let mut first: BTreeMap<&str, Option<usize>> = BTreeMap::new();
     let mut aliases = 0;
     for attempt in attempts {
+        assert!(
+            attempt.variable_id.is_some(),
+            "{module_name}: {direction} attempted a non-variable interface port"
+        );
         if attempt.retained {
             assert!(
                 first.insert(&attempt.expression, attempt.variable_id).is_none(),
