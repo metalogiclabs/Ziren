@@ -374,6 +374,139 @@ class PinTest(unittest.TestCase):
         self.assertGreater(count, 0,
                            "a tautology must not mask a constraint-distinguishable port swap:\n"
                            + report.getvalue())
+        self.assertIn("witness slot changed under constraint edit", report.getvalue())
+        self.assertIn("1 with a changed pinned part", report.getvalue(),
+                      "a flagged source-binding change must count in the summary")
+
+    def test_source_identity_guard_is_unknown_after_inert_constraint_edit(self):
+        kw = {
+            "fields": [(0, "pc_0"), (1, "frame_1"), (2, "frame_2"),
+                       (3, "b_3"), (4, None)],
+            "constraints": ["w.v1 = 0", "w.v2 = 7"],
+            "inputs": [(1, "program.opcode"), (2, "mem_read[2].val[0]")],
+            "outputs": [(2, "state_send[0]")],
+        }
+        original = pin.snapshot(self.tree("original", {"Toy": chip_file(**kw)}))
+        edited = pin.snapshot(self.tree("edited", {"Toy": chip_file(
+            **{**kw, "constraints": kw["constraints"] + ["w.v1 = w.v1"]})}))
+        swapped = pin.snapshot(self.tree("swapped", {"Toy": chip_file(
+            **{**kw, "constraints": kw["constraints"] + ["w.v1 = w.v1"],
+               "inputs": [(2, "program.opcode"), (1, "mem_read[2].val[0]")]})}))
+        for candidate in (edited, swapped):
+            out = io.StringIO()
+            self.assertEqual(pin.source_identity_guard(original, candidate, out=out), "UNKNOWN")
+            self.assertIn("UNKNOWN", out.getvalue())
+
+    def test_legacy_snapshot_without_slots_cannot_clear_constraint_edit(self):
+        original = pin.snapshot(self.tree("old", {"Toy": chip_file()}))
+        edited = pin.snapshot(self.tree("edited", {"Toy": chip_file(
+            constraints=["(w.v4 - (w.v0 + (4 : F))) = 0",
+                         "(w.v3 - (w.v1 + w.v2)) = 0",
+                         "(w.v1).val ≤ 255", "byte_and.rel [w.v1, w.v2] [w.v3]",
+                         "w.v1 = w.v1"])}))
+        original["modules"]["Toy/Toy_is_op"]["port_sources"].pop("slots")
+        with self.assertRaisesRegex(pin.Usage, "missing witness-slot receipts"):
+            pin.compare(original, edited, out=io.StringIO())
+
+    def test_source_identity_guard_detects_port_rebinding_under_same_constraints(self):
+        kw = {
+            "fields": [(0, "pc_0"), (1, "frame_1"), (2, "frame_2"),
+                       (3, "b_3"), (4, None)],
+            "constraints": ["w.v1 = 0", "w.v2 = 7"],
+            "inputs": [(1, "program.opcode"), (2, "mem_read[2].val[0]")],
+            "outputs": [(2, "state_send[0]")],
+        }
+        original = pin.snapshot(self.tree("original", {"Toy": chip_file(**kw)}))
+        swapped = pin.snapshot(self.tree("swapped", {"Toy": chip_file(
+            **{**kw, "inputs": [(2, "program.opcode"), (1, "mem_read[2].val[0]")]})}))
+        out = io.StringIO()
+        self.assertEqual(pin.source_identity_guard(original, swapped, out=out), "CHANGED")
+        self.assertIn("CHANGED", out.getvalue())
+
+    def test_source_identity_guard_preserves_exact_and_renumbered_source(self):
+        original = pin.snapshot(self.tree("original", {"Toy": chip_file()}))
+        renumbered = pin.snapshot(self.tree("renumbered", {"Toy": chip_file(
+            fields=[(10, "pc_10"), (11, "a_11"), (12, "a_12"),
+                    (13, "b_13"), (14, None)],
+            constraints=["(w.v14 - (w.v10 + (4 : F))) = 0",
+                         "(w.v13 - (w.v11 + w.v12)) = 0",
+                         "(w.v11).val ≤ 255", "byte_and.rel [w.v11, w.v12] [w.v13]"],
+            inputs=[(10, "state_recv[0]"), (11, "mem_read[0].val[0]"),
+                    (12, "mem_read[0].val[1]")],
+            outputs=[(14, "state_send[0]"), (13, "mem_write[0].val[0]")])}))
+        self.assertEqual(pin.source_identity_guard(original, original, out=io.StringIO()), "PRESERVED")
+        self.assertEqual(pin.source_identity_guard(original, renumbered, out=io.StringIO()), "PRESERVED")
+
+    def test_source_identity_guard_unknown_for_unconstrained_port(self):
+        kw = {"fields": [(0, "pc_0"), (1, "frame_1"), (2, "frame_2"),
+                         (3, "b_3"), (4, None)],
+              "constraints": ["w.v1 = 0"],
+              "inputs": [(1, "program.opcode"), (2, "mem_read[2].val[0]")]}
+        original = pin.snapshot(self.tree("original", {"Toy": chip_file(**kw)}))
+        self.assertEqual(pin.source_identity_guard(original, original, out=io.StringIO()), "UNKNOWN")
+
+    def test_unconstrained_same_base_swap_never_passes_source_guard(self):
+        # The structural slot receipt may distinguish the swap, but neither
+        # free frame column occurs in a constraint. The fail-closed source
+        # verdict must remain UNKNOWN even as manifest receipts evolve.
+        kw = {"fields": [(0, "pc_0"), (1, "a_1"), (2, "a_2"),
+                         (3, "b_3"), (4, None), (5, "frame_5"), (6, "frame_6")],
+              "inputs": [(5, "program.opcode"), (6, "mem_read[2].val[0]")]}
+        old = chip_file(**kw)
+        swapped = chip_file(**{**kw, "inputs": [(6, "program.opcode"),
+                                                 (5, "mem_read[2].val[0]")]})
+        self.assertNotEqual(old, swapped)
+        baseline = pin.snapshot(self.tree("old", {"Toy": old}))
+        mutated = pin.snapshot(self.tree("swapped", {"Toy": swapped}))
+        verdict = pin.source_identity_guard(baseline, mutated, out=io.StringIO())
+        self.assertIn(verdict, ("CHANGED", "UNKNOWN"))
+        report = io.StringIO()
+        count = pin.compare(baseline, mutated, out=report)
+        self.assertGreater(count, 0, "structural slot swap needs review:\n" + report.getvalue())
+
+    def test_source_identity_guard_detects_rebinding_amid_other_unknown_ports(self):
+        kw = {"fields": [(0, "pc_0"), (1, "frame_1"), (2, "frame_2"),
+                         (3, "b_3"), (4, None)],
+              "constraints": ["w.v1 = 0", "w.v2 = 7"],
+              "inputs": [(1, "program.opcode"), (2, "mem_read[2].val[0]")]}
+        original = pin.snapshot(self.tree("original", {"Toy": chip_file(**kw)}))
+        swapped = pin.snapshot(self.tree("swapped", {"Toy": chip_file(
+            **{**kw, "inputs": [(2, "program.opcode"), (1, "mem_read[2].val[0]")]})}))
+        out = io.StringIO()
+        self.assertEqual(pin.source_identity_guard(original, swapped, out=out), "CHANGED")
+        self.assertIn("at least one port is unconstrained", out.getvalue())
+
+    def test_source_identity_guard_unknown_if_constraints_wrapper_changes(self):
+        old = chip_file()
+        edited = old.replace("def constraints (w : W) : Prop :=\n  constraints_0 w",
+                             "def constraints (w : W) : Prop :=\n  True")
+        baseline = pin.snapshot(self.tree("old", {"Toy": old}))
+        changed = pin.snapshot(self.tree("edited", {"Toy": edited}))
+        self.assertEqual(pin.source_identity_guard(baseline, changed, out=io.StringIO()), "UNKNOWN")
+
+    def test_source_identity_guard_unknown_if_helper_relation_changes(self):
+        old = chip_file()
+        edited = old.replace("opaque rel : List F → List F → Prop",
+                             "opaque rel : List F → List F → Bool")
+        baseline = pin.snapshot(self.tree("old", {"Toy": old}))
+        changed = pin.snapshot(self.tree("edited", {"Toy": edited}))
+        self.assertEqual(pin.source_identity_guard(baseline, changed, out=io.StringIO()), "UNKNOWN")
+
+    def test_source_identity_guard_needs_at_least_one_module(self):
+        self.assertEqual(pin.source_identity_guard({"modules": {}}, {"modules": {}},
+                                                   out=io.StringIO()), "UNKNOWN")
+
+    def test_source_identity_guard_is_separate_cli_with_unknown_exit_three(self):
+        old = self.tree("old", {"Toy": chip_file()})
+        edited = self.tree("edited", {"Toy": chip_file(
+            constraints=["(w.v4 - (w.v0 + (4 : F))) = 0", "w.v1 = w.v1"] )})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(pin.main(["source-guard", old, edited]), 3)
+        self.assertIn("UNKNOWN", out.getvalue())
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(pin.main(["source-guard", old, old]), 0)
+            self.assertEqual(pin.main(["compare", old, edited]), 0)
 
     def test_unused_same_base_column_insertion_is_not_weakening(self):
         # Merely adding an unreferenced derived witness must not force review.
