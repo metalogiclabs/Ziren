@@ -236,9 +236,24 @@ requires review even if both fields have the same base name. Mere generated fiel
 and adding an unused field do not change these receipts. This is an exact source-binding check,
 **not** a proof that a flagged swap is semantically weakening or an equivalence check across
 different constraints. Constraint edits remain informational under the existing policy; source
-binding identities are not compared when the full normalized constraints differ. Fields absent
-from all constraints have no such identity. A format-1 baseline cannot establish these bindings
+binding identities are not compared when the full normalized constraints differ. A second,
+structural witness-slot receipt can nevertheless require review if a labeled port moves between
+slots **while the witness layout remains unchanged**, even when constraints are edited. A pure
+constraint edit remains informational. Older format-2 snapshots without slot receipts cannot
+clear a changed-constraint comparison until regenerated from authoritative sources. Fields absent
+from all constraints have no constraint-based identity. A format-1 baseline cannot establish these bindings
 from its lossy summaries alone: `compare` exits 2 until source-qualified receipts are supplied.
+For an **opt-in, fail-closed source-identity check** across two source-qualified snapshots,
+run `python3 crates/fv/lean4/check/pin_statements.py source-guard OLD NEW`. It returns
+`PRESERVED` (exit 0) only for matching normalized constraints, constraint wrappers, and
+fully constrained positional port bindings; `CHANGED` (exit 1) for a detected rebinding
+under comparable constraints; and `UNKNOWN` (exit 3) when constraints or helper relations
+change, a port lacks a constraint identity, or a module is missing. This does **not** alter `compare`'s
+informational policy for **pure** constraint edits, establish mathematical inequivalence, or
+authenticate the snapshots against their AIR source: those are separate review duties.
+Two distinct generated sources can swap same-base ports absent from constraints
+while evading the constraint-based identities; the guard must leave such cases UNKNOWN
+even if the structural slot receipt detects a changed position.
 Full regeneration with the matching generator and snippets remains the route to rechecking
 generated proofs. Where archived snippet generators are no longer compatible, a **source-only
 migration** can preserve the format-1 proof inventory and attach receipts from freshly generated,
