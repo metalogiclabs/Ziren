@@ -60,6 +60,8 @@ jobs:
           old = json.loads(original_bytes)
           native = checker.snapshot(tmp / 'base/ZirenDet')
           migrated = json.loads(original_bytes)
+          (tmp / 'native-source-snapshot.json').write_text(
+              json.dumps(native, ensure_ascii=False, indent=1) + '\n')
           assert old['format'] == native['format'] == 'ziren-fv-statements/2'
           assert old['files'] == native['files']
           assert old['modules'].keys() == native['modules'].keys()
@@ -67,6 +69,31 @@ jobs:
 
           def strip(record, excluded):
               return {key: value for key, value in record.items() if key not in excluded}
+
+          def digest(value):
+              data = json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
+              return hashlib.sha256(data).hexdigest()
+
+          protected_deltas = []
+          for name, previous in old['modules'].items():
+              regenerated = native['modules'][name]
+              before = strip(previous, {'port_sources', 'other_theorems', 'sections'})
+              after = strip(regenerated, {'port_sources', 'other_theorems', 'sections'})
+              for field in sorted(set(before) | set(after)):
+                  if before.get(field) != after.get(field):
+                      protected_deltas.append({
+                          'module': name, 'field': field,
+                          'before_sha256': digest(before.get(field)),
+                          'after_sha256': digest(after.get(field)),
+                          'before_preview': repr(before.get(field))[:350],
+                          'after_preview': repr(after.get(field))[:350],
+                      })
+          (tmp / 'slot-bridge-mismatches.json').write_text(
+              json.dumps(protected_deltas, indent=2, sort_keys=True) + '\n')
+          print('MATHGRAPH_PROTECTED_DELTAS', len(protected_deltas))
+          for delta in protected_deltas[:12]:
+              print('MATHGRAPH_PROTECTED_DELTA', delta)
+          assert not protected_deltas, 'protected source fields changed; inspect diagnostic artifact'
 
           n_receipts = 0
           source_inventory_deltas = {'other_theorems': 0, 'sections': 0}
@@ -136,6 +163,8 @@ jobs:
           path: |
             ${{ runner.temp }}/slot-bridge-receipt.json
             ${{ runner.temp }}/migrated-slots.json
+            ${{ runner.temp }}/native-source-snapshot.json
+            ${{ runner.temp }}/slot-bridge-mismatches.json
             ${{ runner.temp }}/source.sha256
             ${{ runner.temp }}/source.log
           retention-days: 30
