@@ -1,15 +1,21 @@
 //! Opt-in origin-attempt audit of a real chip; does not require a Lean proof replay.
 
+use std::{collections::BTreeMap, sync::Mutex};
+
 use p3_air::BaseAir;
 use zkm_core_machine::MipsAir;
 use zkm_pcs::MachineAir;
 use zkm_picus::{
-    pcl::{initialize_fresh_var_ctr, set_field_modulus, Felt},
+    pcl::{initialize_fresh_var_ctr, set_field_modulus, Felt, PicusExpr},
     picus_builder::{
         build_selector_env, extract_module, ColumnOutputMode, ExtractionConfig,
-        ShrCarrySummaryMode, SubmoduleMode, PORT_ORIGIN_ATTEMPTS, PORT_ORIGIN_AUDIT_ENABLED,
+        PortOriginAttempt, ShrCarrySummaryMode, SubmoduleMode, PORT_ORIGIN_ATTEMPTS,
+        PORT_ORIGIN_AUDIT_ENABLED,
     },
 };
+
+// Both native tests change the process-global opt-in flag, so they must not overlap.
+static AUDIT_TEST_GUARD: Mutex<()> = Mutex::new(());
 
 fn config() -> ExtractionConfig {
     ExtractionConfig {
@@ -22,6 +28,7 @@ fn config() -> ExtractionConfig {
 
 #[test]
 fn syslinux_audit_records_lost_roles_without_changing_ports() {
+    let _guard = AUDIT_TEST_GUARD.lock().unwrap();
     let _ = set_field_modulus(0x7f00_0001);
     let chips = MipsAir::<Felt>::chips();
     let chip = chips.iter().find(|chip| chip.name() == "SysLinux").expect("SysLinux chip");
@@ -76,4 +83,97 @@ fn syslinux_audit_records_lost_roles_without_changing_ports() {
         );
     }
     println!("MATHGRAPH_SYSLINUX_ORIGIN_AUDIT attempts=13 retained=11 duplicates=2");
+}
+
+/// Characterization only: the one-origin-per-retained-port contract says nothing about
+/// whether a second source role using that same port must also be reported to readers.
+fn check_direction(
+    module_name: &str,
+    direction: &str,
+    ports: &[PicusExpr],
+    attempts: &[PortOriginAttempt],
+) -> usize {
+    let emitted = ports.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let retained = attempts
+        .iter()
+        .filter(|attempt| attempt.retained)
+        .map(|attempt| attempt.expression.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        retained,
+        emitted.iter().map(String::as_str).collect::<Vec<_>>(),
+        "{module_name}: {direction} retained attempts must match actual ports in order"
+    );
+
+    let mut first: BTreeMap<&str, Option<usize>> = BTreeMap::new();
+    let mut aliases = 0;
+    for attempt in attempts {
+        if attempt.retained {
+            assert!(
+                first.insert(&attempt.expression, attempt.variable_id).is_none(),
+                "{module_name}: {direction} retained the same port expression twice"
+            );
+        } else {
+            assert_eq!(
+                first.get(attempt.expression.as_str()),
+                Some(&attempt.variable_id),
+                "{module_name}: {direction} elided a role without a matching earlier port"
+            );
+            aliases += 1;
+        }
+    }
+    aliases
+}
+
+#[test]
+fn all_chip_origin_attempts_map_to_retained_ports() {
+    let _guard = AUDIT_TEST_GUARD.lock().unwrap();
+    let _ = set_field_modulus(0x7f00_0001);
+    let chips = MipsAir::<Felt>::chips();
+    PORT_ORIGIN_AUDIT_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let mut modules = 0;
+    let mut attempts = 0;
+    let mut aliases = 0;
+    let mut affected = Vec::new();
+    for chip in &chips {
+        let info = chip.picus_info();
+        let selector = info
+            .selector_indices
+            .iter()
+            .find(|(_, name)| chip.picus_selector_specialization_allowed(name))
+            .map(|(col, _)| *col);
+        let env = build_selector_env(&info, selector, true);
+        let name = format!("{}__mathgraph_origin_census", chip.name());
+        initialize_fresh_var_ctr(10 * chip.air.width() + 1024);
+        let (module, _) = extract_module(chip, name.clone(), &env, config());
+
+        let audit = PORT_ORIGIN_ATTEMPTS
+            .lock()
+            .unwrap()
+            .get(&name)
+            .cloned()
+            .expect("all-chip extraction must record attempted origins");
+        let input_aliases =
+            check_direction(&name, "input", &module.inputs, &audit.input_attempts);
+        let output_aliases =
+            check_direction(&name, "output", &module.outputs, &audit.output_attempts);
+        let chip_aliases = input_aliases + output_aliases;
+        modules += 1;
+        attempts += audit.input_attempts.len() + audit.output_attempts.len();
+        aliases += chip_aliases;
+        if chip_aliases != 0 {
+            affected.push((chip.name(), input_aliases, output_aliases));
+        }
+    }
+    PORT_ORIGIN_AUDIT_ENABLED.store(false, std::sync::atomic::Ordering::Relaxed);
+    for (chip, ins, outs) in &affected {
+        println!("MATHGRAPH_ORIGIN_CENSUS chip={chip} input_aliases={ins} output_aliases={outs}");
+    }
+    println!(
+        "MATHGRAPH_ORIGIN_CENSUS_SUMMARY modules={modules} attempts={attempts} aliases={aliases} affected={}",
+        affected.len()
+    );
+    assert!(modules >= 50, "the census must actually cover the machine's chip population");
+    assert!(aliases >= 2, "SysLinux's two independently observed role aliases must remain visible");
 }
