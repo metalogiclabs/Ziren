@@ -3,6 +3,7 @@
 
     pin_statements.py snapshot ZIRENDET_DIR > statements.json
     pin_statements.py compare OLD.json NEW.json|ZIRENDET_DIR [--all-info]
+    pin_statements.py source-guard OLD.json|DIR NEW.json|DIR
 
 A theorem count says nothing about what each theorem claims.  `snapshot` records, for every
 module of every generated chip file, the parts that give its determinism theorem its meaning:
@@ -333,10 +334,17 @@ def source_port_bindings(mod, ports):
 
     shape = [squash(VAR.sub(normalize, c)) for c in mod.constraint_lines]
     shape_json = json.dumps(shape, ensure_ascii=False, separators=(",", ":"))
+    field_slots = {field: pos for pos, (field, _) in enumerate(mod.fields)}
     return {
         "constraint_shape": hashlib.sha256(shape_json.encode()).hexdigest(),
         "bindings": {kind: [[label, ids.get(idx)] for label, idx in ports[kind]]
                      for kind in PORT_DEFS},
+        # Witness declaration positions survive consistent vN renumbering.
+        # They can reveal a source-port swap even when a separate constraint
+        # edit makes the whole-expression source IDs incomparable. Compare
+        # these only when the witness layout itself is unchanged.
+        "slots": {kind: [[label, field_slots[idx]]
+                         for label, idx in ports[kind]] for kind in PORT_DEFS},
     }
 
 
@@ -517,6 +525,34 @@ def compare_module(old, new):
                 if before != after:
                     weak.append(f"{kind[:-1]} {label}: source-constrained field changed: "
                                 f"{before} -> {after} (same alpha-normalized constraints)")
+    else:
+        if "slots" not in old_sources or "slots" not in new_sources:
+            raise Usage("missing witness-slot receipts under changed constraints; "
+                        "regenerate source-qualified manifests before comparing")
+    if (old["witness"] == new["witness"] and
+            "slots" in old_sources and "slots" in new_sources):
+        # Whole-expression source IDs cannot be compared across constraint
+        # edits; a completely unconstrained port has no such ID at all. Its
+        # positional witness slot can still reveal a rebind when both witness
+        # declarations retain the same layout. This is a review trigger, not
+        # a claim of mathematical inequivalence.
+        for kind in PORT_DEFS:
+            prior = dict((rename_label(label, renames), slot)
+                         for label, slot in old_sources["slots"][kind])
+            current = dict(new_sources["slots"][kind])
+            prior_id = dict((rename_label(label, renames), ident)
+                            for label, ident in old_sources["bindings"][kind])
+            current_id = dict(new_sources["bindings"][kind])
+            for label in sorted(prior.keys() & current.keys()):
+                if prior[label] != current[label] and (
+                        old_sources["constraint_shape"] != new_sources["constraint_shape"] or
+                        prior_id[label] is None or current_id[label] is None):
+                    context = ("under constraint edit" if
+                               old_sources["constraint_shape"] != new_sources["constraint_shape"]
+                               else "without constraint-derived identity")
+                    weak.append(f"{kind[:-1]} {label}: witness slot changed {context}: "
+                                f"{prior[label]} -> {current[label]} "
+                                "(source binding requires review)")
     for kind, bad in (("inputs", "gained"), ("outputs", "lost"), ("assumed", "gained")):
         oports = dict(split_port(rename_label(p, renames)) for p in old[kind])
         nports = dict(split_port(p) for p in new[kind])
@@ -675,10 +711,65 @@ def compare(old, new, all_info=False, out=None):
                or (om[k]["kind"] == "module" and
                    om[k].get("port_sources", {}).get("constraint_shape") ==
                    nm[k].get("port_sources", {}).get("constraint_shape") and
-                   om[k]["port_sources"]["bindings"] != nm[k]["port_sources"]["bindings"]))
+                   om[k]["port_sources"]["bindings"] != nm[k]["port_sources"]["bindings"])
+               or k in weak)
     print(f"{len(om)} -> {len(nm)} modules; {stmt} with a changed pinned part; "
           f"{n_weak} weakening(s) in {len(weak)} module(s); {len(info)} module(s) with info", file=out)
     return n_weak
+
+
+def source_identity_guard(old, new, out=None):
+    """Conservatively compare port source identities, independently of `compare`.
+
+    PRESERVED is scoped to equal alpha-normalized constraint expressions,
+    unchanged constraint wrappers, and their complete, constrained port bindings.
+    A changed constraint definition, absent binding, or missing module yields
+    UNKNOWN, never a false acceptance.
+    CHANGED denotes an observed port-binding/position difference under identical
+    constraints, not mathematical inequivalence or proof unsoundness. The caller
+    must independently authenticate both source snapshots and their owners.
+    """
+    out = out or sys.stdout
+    changed, unknown = [], []
+    om, nm = old["modules"], new["modules"]
+    if not any(m["kind"] == "module" for m in om.values()):
+        unknown.append(("<inventory>", "no source-port modules to compare"))
+    for key in sorted(set(om) | set(nm)):
+        before, after = om.get(key), nm.get(key)
+        if before is None or after is None:
+            unknown.append((key, "module present on only one side"))
+            continue
+        if before["kind"] != after["kind"]:
+            unknown.append((key, "module kind changed"))
+            continue
+        if before["kind"] == "helper":
+            if before["decl"] != after["decl"]:
+                unknown.append((key, "helper relation changed; source meaning is incomparable"))
+            continue
+        a, b = before.get("port_sources"), after.get("port_sources")
+        if not a or not b:
+            unknown.append((key, "source-port receipt missing"))
+            continue
+        if (a["constraint_shape"] != b["constraint_shape"] or
+                before["constraints"]["definition"] != after["constraints"]["definition"]):
+            unknown.append((key, "constraint definition changed; source identities are incomparable"))
+            continue
+        renames = rename_map(before["witness"], after["witness"])
+        for kind in PORT_DEFS:
+            prior = [(rename_label(label, renames), ident) for label, ident in a["bindings"][kind]]
+            current = [tuple(item) for item in b["bindings"][kind]]
+            if prior != current:
+                changed.append((key, f"{kind} positional/source binding differs"))
+        if any(identity is None for source in (a, b) for kind in PORT_DEFS
+               for _, identity in source["bindings"][kind]):
+            unknown.append((key, "at least one port is unconstrained"))
+    for key, reason in changed:
+        print(f"CHANGED  {key}: {reason}", file=out)
+    for key, reason in unknown:
+        print(f"UNKNOWN  {key}: {reason}", file=out)
+    status = "CHANGED" if changed else "UNKNOWN" if unknown else "PRESERVED"
+    print(f"SOURCE-IDENTITY {status}: {len(changed)} changed, {len(unknown)} unknown module(s)", file=out)
+    return status
 
 
 def main(argv):
@@ -691,6 +782,9 @@ def main(argv):
         rest = [a for a in argv[1:] if a != "--all-info"]
         if argv[:1] == ["compare"] and len(rest) == 2:
             return 1 if compare(load(rest[0]), load(rest[1]), "--all-info" in argv) else 0
+        if argv[:1] == ["source-guard"] and len(argv) == 3:
+            status = source_identity_guard(load(argv[1]), load(argv[2]))
+            return {"PRESERVED": 0, "CHANGED": 1, "UNKNOWN": 3}[status]
     except (Usage, ValueError, OSError) as err:
         print(f"pin_statements: {err}", file=sys.stderr)
         return 2
