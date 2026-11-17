@@ -1,0 +1,141 @@
+name: MathGraph source-qualified witness-slot bridge
+
+on:
+  push:
+    branches:
+      - research/ziren-slot-source-bridge-20261117
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+
+      - name: Qualify the local source-binding hardening tests
+        run: python3 crates/fv/lean4/check/test_pin_statements.py
+
+      - name: Build the source extractor
+        run: cargo build --locked --release -p zkm-picus
+
+      - name: Regenerate authoritative base sources without external snippets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/base" "$RUNNER_TEMP/empty"
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 600s \
+            target/release/zkm-picus --all --format lean \
+            --lean-out-dir "$RUNNER_TEMP/base" > "$RUNNER_TEMP/source.log" 2>&1
+          PICUS_SNIPPET_DIR="$RUNNER_TEMP/empty" timeout 300s \
+            target/release/zkm-picus --chip CloClz --shrcarry-summary precise \
+            --format lean --lean-out-dir "$RUNNER_TEMP/base" >> "$RUNNER_TEMP/source.log" 2>&1
+          find "$RUNNER_TEMP/base/ZirenDet/Chips" -maxdepth 1 -type f -name '*.lean' -print0 \
+            | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/source.sha256"
+
+      - name: Reconcile new slots against every protected baseline field
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import io
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          sys.path.insert(0, 'crates/fv/lean4/check')
+          import pin_statements as checker
+
+          tmp = pathlib.Path(os.environ['RUNNER_TEMP'])
+          original_path = pathlib.Path('crates/fv/lean4/statements.json')
+          original_bytes = original_path.read_bytes()
+          old = json.loads(original_bytes)
+          native = checker.snapshot(tmp / 'base/ZirenDet')
+          migrated = json.loads(original_bytes)
+          assert old['format'] == native['format'] == 'ziren-fv-statements/2'
+          assert old['files'] == native['files']
+          assert old['modules'].keys() == native['modules'].keys()
+          assert len(old['files']) == 62 and len(old['modules']) == 155
+
+          def strip(record, excluded):
+              return {key: value for key, value in record.items() if key not in excluded}
+
+          n_receipts = 0
+          source_inventory_deltas = {'other_theorems': 0, 'sections': 0}
+          for name, previous in old['modules'].items():
+              regenerated = native['modules'][name]
+              assert previous['kind'] == regenerated['kind'], name
+              for field in source_inventory_deltas:
+                  if previous.get(field) != regenerated.get(field):
+                      source_inventory_deltas[field] += 1
+              assert strip(previous, {'port_sources', 'other_theorems', 'sections'}) == strip(
+                  regenerated, {'port_sources', 'other_theorems', 'sections'}), name
+              if previous['kind'] != 'module':
+                  assert 'port_sources' not in previous, name
+                  assert 'port_sources' not in regenerated, name
+                  continue
+              old_sources = previous['port_sources']
+              new_sources = regenerated['port_sources']
+              assert 'slots' not in old_sources, name
+              assert 'slots' in new_sources, name
+              assert strip(new_sources, {'slots'}) == old_sources, name
+              migrated['modules'][name]['port_sources']['slots'] = new_sources['slots']
+              n_receipts += 1
+          assert n_receipts == 129
+
+          for name, previous in old['modules'].items():
+              updated = migrated['modules'][name]
+              if previous['kind'] == 'module':
+                  prior_receipt = strip(updated['port_sources'], {'slots'})
+                  assert prior_receipt == previous['port_sources'], name
+                  assert strip(updated, {'port_sources'}) == strip(previous, {'port_sources'}), name
+              else:
+                  assert updated == previous, name
+
+          compare_output = io.StringIO()
+          weakenings = checker.compare(migrated, native, out=compare_output)
+          assert weakenings == 0, compare_output.getvalue()
+          guard_output = io.StringIO()
+          self_verdict = checker.source_identity_guard(migrated, migrated, out=guard_output)
+          assert self_verdict in ('PRESERVED', 'UNKNOWN')
+
+          migrated_bytes = (json.dumps(migrated, ensure_ascii=False, indent=1) + '\n').encode()
+          (tmp / 'migrated-slots.json').write_bytes(migrated_bytes)
+          receipt = {
+              'head_sha': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+              'baseline_sha256': hashlib.sha256(original_bytes).hexdigest(),
+              'migrated_sha256': hashlib.sha256(migrated_bytes).hexdigest(),
+              'chip_files': len(old['files']),
+              'module_records': len(old['modules']),
+              'source_slot_receipts': n_receipts,
+              'prior_protected_fields_conserved': True,
+              'generated_non_inventory_fields_match': True,
+              'source_only_proof_inventory_deltas': source_inventory_deltas,
+              'weakening_count_against_native_base': weakenings,
+              'source_identity_self_verdict': self_verdict,
+              'proof_bodies_not_regenerated_or_checked': True,
+          }
+          (tmp / 'slot-bridge-receipt.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True) + '\n')
+          print(json.dumps(receipt, indent=2, sort_keys=True))
+          PY
+
+      - name: Preserve bounded source-only migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mathgraph-ziren-slot-source-bridge
+          path: |
+            ${{ runner.temp }}/slot-bridge-receipt.json
+            ${{ runner.temp }}/migrated-slots.json
+            ${{ runner.temp }}/source.sha256
+            ${{ runner.temp }}/source.log
+          retention-days: 30
