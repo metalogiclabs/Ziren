@@ -41,7 +41,11 @@ fn syslinux_audit_records_lost_roles_without_changing_ports() {
 
     assert_eq!(before.inputs, after.inputs, "audit must not change input values/order");
     assert_eq!(before.outputs, after.outputs, "audit must not change output values/order");
-    assert_eq!(before.constraints.len(), after.constraints.len(), "audit changes constraints");
+    assert_eq!(
+        format!("{:?}", before.constraints),
+        format!("{:?}", after.constraints),
+        "audit must not change constraints or their order",
+    );
 
     let audits = PORT_ORIGIN_ATTEMPTS.lock().unwrap();
     let attempt_log = audits.get(name).expect("audit recorded for the extracted module");
@@ -66,6 +70,10 @@ fn syslinux_audit_records_lost_roles_without_changing_ports() {
         assert_eq!(recv.expression, at.expression, "same deduplication key");
         assert!(recv.retained, "first source role is retained");
         assert!(!at.retained, "second source role is not retained");
+        println!(
+            "MATHGRAPH_SYSLINUX_ALIAS role={at_name} variable_id={:?} key={}",
+            at.variable_id, at.expression
+        );
     }
     println!("MATHGRAPH_SYSLINUX_ORIGIN_AUDIT attempts=13 retained=11 duplicates=2");
 }
