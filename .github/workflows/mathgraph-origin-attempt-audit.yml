@@ -1,0 +1,21 @@
+name: MathGraph origin-attempt audit
+
+on:
+  push:
+    branches:
+      - research/ziren-native-origin-attempts-20261117
+
+permissions:
+  contents: read
+
+jobs:
+  syslinux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-09-17
+      - name: Run native port-origin audit regression
+        run: cargo test --locked -p zkm-picus --test port_origin_attempts -- --nocapture
