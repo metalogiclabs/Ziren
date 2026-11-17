@@ -38,7 +38,7 @@ jobs:
           find "$RUNNER_TEMP/base/ZirenDet/Chips" -maxdepth 1 -type f -name '*.lean' -print0 \
             | sort -z | xargs -0 sha256sum > "$RUNNER_TEMP/source.sha256"
 
-      - name: Reconcile new slots against every protected baseline field
+      - name: Reconcile witness slots and reviewed selector-label metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -48,6 +48,7 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import subprocess
           import sys
 
@@ -74,11 +75,77 @@ jobs:
               data = json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
               return hashlib.sha256(data).hexdigest()
 
+          def selected_output_rename(line):
+              match = re.fullmatch(r'col (is_[a-zA-Z0-9_]+)#0 <- (is_[a-zA-Z0-9_]+)', line)
+              assert match and match.group(1) == match.group(2), line
+              return f'selector.{match.group(1)} <- {match.group(2)}'
+
+          def checked_metadata_only_change(name, previous, regenerated, changed):
+              """Only accept corrected top selector labels; never waive a theorem delta."""
+              assert name.endswith('/top') and previous['kind'] == regenerated['kind'] == 'module', name
+              assert changed == {'outputs', 'hashes'}, (name, changed)
+              hash_delta = {key for key in previous['hashes'].keys() | regenerated['hashes'].keys()
+                            if previous['hashes'].get(key) != regenerated['hashes'].get(key)}
+              assert hash_delta == {'outputs'}, (name, hash_delta)
+              before, after = previous['outputs'], regenerated['outputs']
+              assert len(before) == len(after) and len(before) > 0, name
+              assert [selected_output_rename(line) for line in before] == after, name
+              return len(before)
+
+          def assert_port_receipts(name, previous, regenerated, labels_changed):
+              prior = previous['port_sources']
+              actual = regenerated['port_sources']
+              assert 'slots' not in prior and set(actual) == {'constraint_shape', 'bindings', 'slots'}, name
+              assert prior['constraint_shape'] == actual['constraint_shape'], name
+              for kind in ('inputs', 'outputs', 'assumed'):
+                  old_bindings = prior['bindings'][kind]
+                  new_bindings = actual['bindings'][kind]
+                  slots = actual['slots'][kind]
+                  assert len(old_bindings) == len(new_bindings) == len(slots), (name, kind)
+                  for (old_label, prior_id), (new_label, native_id), (slot_label, slot_id) in zip(
+                          old_bindings, new_bindings, slots):
+                      expected_label = (
+                          selected_output_rename(old_label + ' <- ' + old_label[4:-2]).split(' <- ')[0]
+                          if labels_changed and kind == 'outputs' else old_label)
+                      assert (new_label, native_id, slot_label) == (
+                          expected_label, prior_id, expected_label), (name, kind, old_label)
+                      assert isinstance(slot_id, int) and 0 <= slot_id < regenerated['witness']['fields'], (
+                          name, kind, slot_id)
+
+          # Negative controls show the exception rejects output order/carrier,
+          # theorem-hash, selector-label, and constrained source-ID mutations.
+          positive = old['modules']['AddSub/top']
+          authoritative = native['modules']['AddSub/top']
+          def expected_rejection(modify):
+              candidate = json.loads(json.dumps(authoritative))
+              modify(candidate)
+              before = strip(positive, {'port_sources', 'other_theorems', 'sections'})
+              after = strip(candidate, {'port_sources', 'other_theorems', 'sections'})
+              changed = {field for field in before.keys() | after.keys()
+                         if before.get(field) != after.get(field)}
+              try:
+                  checked_metadata_only_change('AddSub/top', positive, candidate, changed)
+                  assert_port_receipts('AddSub/top', positive, candidate, True)
+              except AssertionError:
+                  return
+              raise AssertionError('metadata exception admitted a negative control')
+
+          expected_rejection(lambda c: c['outputs'].reverse())
+          expected_rejection(lambda c: c['outputs'].__setitem__(0, 'selector.is_add <- is_sub'))
+          expected_rejection(lambda c: c['outputs'].__setitem__(0, 'selector.is_other <- is_add'))
+          expected_rejection(lambda c: c['hashes'].__setitem__('statement', 'mutated-statement'))
+          expected_rejection(lambda c: c['port_sources']['bindings']['outputs'][0].__setitem__(1, -1))
+          print('MATHGRAPH_RELABEL_NEGATIVE_CONTROLS', 5)
+
           protected_deltas = []
+          metadata_modules = 0
+          metadata_labels = 0
           for name, previous in old['modules'].items():
               regenerated = native['modules'][name]
               before = strip(previous, {'port_sources', 'other_theorems', 'sections'})
               after = strip(regenerated, {'port_sources', 'other_theorems', 'sections'})
+              changed = {field for field in before.keys() | after.keys()
+                         if before.get(field) != after.get(field)}
               for field in sorted(set(before) | set(after)):
                   if before.get(field) != after.get(field):
                       protected_deltas.append({
@@ -88,12 +155,19 @@ jobs:
                           'before_preview': repr(before.get(field))[:350],
                           'after_preview': repr(after.get(field))[:350],
                       })
+              if changed:
+                  metadata_labels += checked_metadata_only_change(name, previous, regenerated, changed)
+                  metadata_modules += 1
+              if previous['kind'] == 'module':
+                  assert_port_receipts(name, previous, regenerated, bool(changed))
           (tmp / 'slot-bridge-mismatches.json').write_text(
               json.dumps(protected_deltas, indent=2, sort_keys=True) + '\n')
           print('MATHGRAPH_PROTECTED_DELTAS', len(protected_deltas))
           for delta in protected_deltas[:12]:
               print('MATHGRAPH_PROTECTED_DELTA', delta)
-          assert not protected_deltas, 'protected source fields changed; inspect diagnostic artifact'
+          assert metadata_modules == 24 and metadata_labels == 72
+          assert len(protected_deltas) == 2 * metadata_modules
+          print('MATHGRAPH_REVIEWED_SELECTOR_RELABELS', metadata_modules, metadata_labels)
 
           n_receipts = 0
           source_inventory_deltas = {'other_theorems': 0, 'sections': 0}
@@ -103,27 +177,28 @@ jobs:
               for field in source_inventory_deltas:
                   if previous.get(field) != regenerated.get(field):
                       source_inventory_deltas[field] += 1
-              assert strip(previous, {'port_sources', 'other_theorems', 'sections'}) == strip(
-                  regenerated, {'port_sources', 'other_theorems', 'sections'}), name
               if previous['kind'] != 'module':
                   assert 'port_sources' not in previous, name
                   assert 'port_sources' not in regenerated, name
                   continue
-              old_sources = previous['port_sources']
               new_sources = regenerated['port_sources']
-              assert 'slots' not in old_sources, name
-              assert 'slots' in new_sources, name
-              assert strip(new_sources, {'slots'}) == old_sources, name
-              migrated['modules'][name]['port_sources']['slots'] = new_sources['slots']
+              migrated['modules'][name]['port_sources'] = new_sources
+              if previous['outputs'] != regenerated['outputs']:
+                  migrated['modules'][name]['outputs'] = regenerated['outputs']
+                  migrated['modules'][name]['hashes']['outputs'] = regenerated['hashes']['outputs']
+              assert strip(migrated['modules'][name], {'other_theorems', 'sections'}) == strip(
+                  regenerated, {'other_theorems', 'sections'}), name
               n_receipts += 1
           assert n_receipts == 129
 
           for name, previous in old['modules'].items():
               updated = migrated['modules'][name]
               if previous['kind'] == 'module':
-                  prior_receipt = strip(updated['port_sources'], {'slots'})
-                  assert prior_receipt == previous['port_sources'], name
-                  assert strip(updated, {'port_sources'}) == strip(previous, {'port_sources'}), name
+                  if previous['outputs'] != updated['outputs']:
+                      assert checked_metadata_only_change(name, previous, updated, {'outputs', 'hashes'})
+                  else:
+                      assert strip(updated, {'port_sources'}) == strip(previous, {'port_sources'}), name
+                  assert updated['port_sources'] == native['modules'][name]['port_sources'], name
               else:
                   assert updated == previous, name
 
@@ -133,6 +208,9 @@ jobs:
           guard_output = io.StringIO()
           self_verdict = checker.source_identity_guard(migrated, migrated, out=guard_output)
           assert self_verdict in ('PRESERVED', 'UNKNOWN')
+          native_guard_output = io.StringIO()
+          native_verdict = checker.source_identity_guard(migrated, native, out=native_guard_output)
+          assert native_verdict == self_verdict
 
           migrated_bytes = (json.dumps(migrated, ensure_ascii=False, indent=1) + '\n').encode()
           (tmp / 'migrated-slots.json').write_bytes(migrated_bytes)
@@ -143,11 +221,16 @@ jobs:
               'chip_files': len(old['files']),
               'module_records': len(old['modules']),
               'source_slot_receipts': n_receipts,
-              'prior_protected_fields_conserved': True,
-              'generated_non_inventory_fields_match': True,
+              'prior_non_selector_protected_fields_conserved': True,
+              'reviewed_selector_relabel_modules': metadata_modules,
+              'reviewed_selector_relabel_outputs': metadata_labels,
+              'reviewed_selector_relabel_fields': ['outputs', 'hashes.outputs'],
+              'negative_controls_rejected': 5,
+              'generated_non_inventory_fields_match_after_reviewed_relabel': True,
               'source_only_proof_inventory_deltas': source_inventory_deltas,
               'weakening_count_against_native_base': weakenings,
               'source_identity_self_verdict': self_verdict,
+              'source_identity_native_verdict': native_verdict,
               'proof_bodies_not_regenerated_or_checked': True,
           }
           (tmp / 'slot-bridge-receipt.json').write_text(
