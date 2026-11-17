@@ -19,3 +19,5 @@ jobs:
           toolchain: nightly-2026-09-17
       - name: Run native port-origin audit regression
         run: cargo test --locked -p zkm-picus --test port_origin_attempts -- --nocapture
+      - name: Run full Picus crate tests
+        run: cargo test --locked -p zkm-picus
