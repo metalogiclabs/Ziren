@@ -72,7 +72,7 @@ jobs:
             "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean") \
             > "$RUNNER_TEMP/generator.log" 2>&1
           test -s "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
-          rg -q 'theorem gadget_det' "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
+          grep -q 'theorem gadget_det' "$RUNNER_TEMP/snippets/Bn254FpOpAssign_is_add.lean"
           PICUS_SNIPPET_DIR="$RUNNER_TEMP/snippets" PICUS_BUDGET_S=180 timeout 260s \
             target/release/zkm-picus --chip Bn254FpOpAssign --format lean \
             --derive --derive-diagnose --lean-out-dir "$RUNNER_TEMP/derived" \
